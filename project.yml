@@ -71,12 +71,33 @@ targets:
         OTHER_LDFLAGS: $(inherited) -framework CoreAudio -framework CoreFoundation
         GCC_SYMBOLS_PRIVATE_EXTERN: NO
         MACOSX_DEPLOYMENT_TARGET: "14.0"
+  MacAudioTests:
+    type: bundle.unit-test
+    platform: macOS
+    supportedDestinations: [macOS]
+    sources:
+      - path: Tests
+    dependencies:
+      - target: MacAudioApp
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.skylarenns.macaudio.tests
+        PRODUCT_NAME: MacAudioTests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/MacAudio.app/Contents/MacOS/MacAudio
+        BUNDLE_LOADER: $(TEST_HOST)
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
 schemes:
   MacAudio:
     build:
       targets:
         MacAudioApp: all
         VirtualMicDriver: all
+        MacAudioTests: [test]
+    test:
+      config: Debug
+      targets:
+        - MacAudioTests
     run:
       config: Debug
       executable: MacAudioApp

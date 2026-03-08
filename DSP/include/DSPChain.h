@@ -12,23 +12,36 @@ typedef struct DSPChain DSPChain;
 
 typedef struct DSPChainParameters {
     float inputGainDB;
-    float hpfHz;
-    float lowGainDB;
-    float midGainDB;
-    float highGainDB;
+    bool eqEnabled;
+    bool highPassEnabled;
+    float highPassHz;
+    bool band1Enabled;
+    float band1FrequencyHz;
+    float band1GainDB;
+    float band1Q;
+    bool band2Enabled;
+    float band2FrequencyHz;
+    float band2GainDB;
+    float band2Q;
+    bool band3Enabled;
+    float band3FrequencyHz;
+    float band3GainDB;
+    float band3Q;
+    bool compressorEnabled;
     float compressorThresholdDB;
     float compressorRatio;
     float compressorAttackMs;
     float compressorReleaseMs;
     float makeupGainDB;
+    bool limiterEnabled;
     float limiterCeilingDB;
     float outputGainDB;
     bool denoiseEnabled;
     float denoiseStrength;
     bool gateEnabled;
     float gateThresholdDB;
-    bool deEsserEnabled;
-    float deEsserAmount;
+    float gateAttackMs;
+    float gateReleaseMs;
 } DSPChainParameters;
 
 typedef struct DSPChainMeters {
@@ -36,6 +49,8 @@ typedef struct DSPChainMeters {
     float inputRMS;
     float outputPeak;
     float outputRMS;
+    float compressorInputRMS;
+    float compressorOutputRMS;
     float gainReductionDB;
     uint32_t clippedSamples;
 } DSPChainMeters;
