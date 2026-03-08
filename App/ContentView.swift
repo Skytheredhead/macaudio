@@ -283,68 +283,80 @@ private struct RackWorkspaceSection: View {
 
             GeometryReader { proxy in
                 let canvasSize = proxy.size
-                let patchRect = patchAreaRect(in: canvasSize)
+                let contentSize = CGSize(width: canvasSize.width, height: rackContentHeight(for: canvasSize))
 
                 ZStack(alignment: .bottomTrailing) {
-                    ZStack(alignment: .topLeading) {
-                        RackWorkspaceGrid()
+                    ScrollView(.vertical, showsIndicators: true) {
+                        ZStack(alignment: .topLeading) {
+                            RackWorkspaceGrid()
 
-                        Canvas { context, _ in
-                            drawConnections(in: &context, canvasSize: canvasSize)
-                        }
-                        .allowsHitTesting(false)
+                            RackVerticalRails(frame: rackFrame(in: contentSize), contentHeight: contentSize.height)
 
-                        InputNodeView(
-                            title: selectedInputName,
-                            accent: accentCyan,
-                            onCableChanged: { start, current in
-                                updateCable(from: .input, start: start, current: current, canvasSize: canvasSize)
-                            },
-                            onCableEnded: { point in
-                                finishCable(from: .input, at: point, canvasSize: canvasSize)
+                            Canvas { context, _ in
+                                drawConnections(in: &context, canvasSize: contentSize)
                             }
-                        )
-                        .position(inputNodePosition(in: patchRect))
+                            .allowsHitTesting(false)
 
-                        ForEach(viewModel.rackBoxes) { box in
-                            RackBoxNodeView(
-                                box: box,
-                                accentOrange: accentOrange,
-                                accentCyan: accentCyan,
-                                isInputHighlighted: highlightedDestination == .box(box.id),
-                                onCableChanged: { start, current in
-                                    updateCable(from: .box(box.id), start: start, current: current, canvasSize: canvasSize)
-                                },
-                                onCableEnded: { point in
-                                    finishCable(from: .box(box.id), at: point, canvasSize: canvasSize)
-                                },
-                                openPluginBrowser: { viewModel.openPluginBrowser(for: box) },
-                                openPluginEditor: { viewModel.openPluginEditor(for: box.id) },
-                                clearPlugin: { viewModel.clearPlugin(in: box.id) },
-                                removeBox: { viewModel.removeRackBox(box.id) },
-                                toggleBypass: { viewModel.toggleBoxBypass(box.id) },
-                                moveBox: { point in
-                                    viewModel.moveRackBox(box.id, to: point, in: canvasBoundsSize(for: canvasSize))
+                            if let frame = moduleFrame(for: viewModel.inputNodeID, canvasSize: contentSize) {
+                                InputNodeView(
+                                    title: selectedInputName,
+                                    accent: accentCyan,
+                                    onCableChanged: { start, current in
+                                        updateCable(from: .input, start: start, current: current, canvasSize: contentSize)
+                                    },
+                                    onCableEnded: { point in
+                                        finishCable(from: .input, at: point, canvasSize: contentSize)
+                                    }
+                                )
+                                .frame(width: frame.width, height: frame.height)
+                                .position(CGPoint(x: frame.midX, y: frame.midY))
+                            }
+
+                            ForEach(viewModel.rackBoxes) { box in
+                                if let frame = moduleFrame(for: box.id, canvasSize: contentSize) {
+                                    RackBoxNodeView(
+                                        box: box,
+                                        accentOrange: accentOrange,
+                                        accentCyan: accentCyan,
+                                        isInputHighlighted: highlightedDestination == .box(box.id),
+                                        onCableChanged: { start, current in
+                                            updateCable(from: .box(box.id), start: start, current: current, canvasSize: contentSize)
+                                        },
+                                        onCableEnded: { point in
+                                            finishCable(from: .box(box.id), at: point, canvasSize: contentSize)
+                                        },
+                                        openPluginBrowser: { viewModel.openPluginBrowser(for: box) },
+                                        openPluginEditor: { viewModel.openPluginEditor(for: box.id) },
+                                        clearPlugin: { viewModel.clearPlugin(in: box.id) },
+                                        removeBox: { viewModel.removeRackBox(box.id) },
+                                        toggleBypass: { viewModel.toggleBoxBypass(box.id) }
+                                    )
+                                    .frame(width: frame.width, height: frame.height)
+                                    .position(CGPoint(x: frame.midX, y: frame.midY))
                                 }
-                            )
-                            .position(displayPosition(for: box, in: canvasSize))
-                        }
+                            }
 
-                        OutputNodeView(
-                            title: selectedOutputName,
-                            accent: accentOrange,
-                            isInputHighlighted: highlightedDestination == .output
-                        )
-                        .position(outputNodePosition(in: patchRect))
-                    }
-                    .coordinateSpace(name: RackTheme.workspaceCoordinateSpace)
-                    .contentShape(Rectangle())
-                    .clipped()
-                    .contextMenu {
-                        Button("Add Box") {
-                            viewModel.addRackBox()
+                            if let frame = moduleFrame(for: viewModel.outputNodeID, canvasSize: contentSize) {
+                                OutputNodeView(
+                                    title: selectedOutputName,
+                                    accent: accentOrange,
+                                    isInputHighlighted: highlightedDestination == .output
+                                )
+                                .frame(width: frame.width, height: frame.height)
+                                .position(CGPoint(x: frame.midX, y: frame.midY))
+                            }
+                        }
+                        .frame(width: canvasSize.width, height: contentSize.height, alignment: .topLeading)
+                        .coordinateSpace(name: RackTheme.workspaceCoordinateSpace)
+                        .contentShape(Rectangle())
+                        .clipped()
+                        .contextMenu {
+                            Button("Add Box") {
+                                viewModel.addRackBox()
+                            }
                         }
                     }
+                    .clipped()
 
                     MeterDock(engine: viewModel.engine, accentOrange: accentOrange, accentCyan: accentCyan)
                         .frame(width: RackTheme.meterDockWidth)
@@ -362,7 +374,7 @@ private struct RackWorkspaceSection: View {
                     .font(.custom("Avenir Next Condensed", size: 26))
                     .fontWeight(.bold)
                     .foregroundStyle(.white)
-                Text("Drag modules. Patch OUT to IN.")
+                Text("Stack modules. Patch OUT to IN.")
                     .font(.system(size: 11, weight: .bold, design: .monospaced))
                     .foregroundStyle(Color.white.opacity(0.42))
             }
@@ -389,54 +401,41 @@ private struct RackWorkspaceSection: View {
         viewModel.engine.availableOutputDevices.first(where: { $0.id == viewModel.engine.selectedOutputDeviceID })?.name ?? "No output"
     }
 
-    private func patchAreaRect(in size: CGSize) -> CGRect {
+    private func rackFrame(in size: CGSize) -> CGRect {
         let leftInset = RackTheme.canvasInset
         let topInset = RackTheme.canvasInset
         let rightInset = RackTheme.canvasInset + RackTheme.meterDockWidth + RackTheme.meterDockGap
-        let bottomInset = RackTheme.canvasInset
         return CGRect(
             x: leftInset,
             y: topInset,
-            width: max(420, size.width - leftInset - rightInset),
-            height: max(320, size.height - topInset - bottomInset)
+            width: max(520, size.width - leftInset - rightInset),
+            height: size.height - topInset - RackTheme.canvasInset
         )
     }
 
-    private func canvasBoundsSize(for canvasSize: CGSize) -> CGSize {
-        CGSize(width: patchAreaRect(in: canvasSize).maxX, height: canvasSize.height)
+    private func rackContentHeight(for canvasSize: CGSize) -> CGFloat {
+        let moduleCount = max(2, viewModel.rackBoxes.count + 2)
+        let totalModulesHeight = CGFloat(moduleCount) * RackTheme.verticalModuleHeight
+        let totalSpacing = CGFloat(max(0, moduleCount - 1)) * RackTheme.verticalRackGap
+        return totalModulesHeight + totalSpacing + RackTheme.canvasInset * 2
     }
 
-    private func inputNodePosition(in rect: CGRect) -> CGPoint {
-        CGPoint(x: rect.minX + RackTheme.moduleSize.width / 2, y: primaryLaneY(in: rect))
-    }
-
-    private func outputNodePosition(in rect: CGRect) -> CGPoint {
-        CGPoint(x: rect.maxX - RackTheme.moduleSize.width / 2, y: primaryLaneY(in: rect))
-    }
-
-    private func displayPosition(for box: RackBoxNode, in canvasSize: CGSize) -> CGPoint {
-        clamp(position: box.position, in: canvasBoundsSize(for: canvasSize))
-    }
-
-    private func nodeCenter(for nodeID: UUID, canvasSize: CGSize) -> CGPoint? {
-        if nodeID == viewModel.inputNodeID {
-            return inputNodePosition(in: patchAreaRect(in: canvasSize))
-        }
-        if nodeID == viewModel.outputNodeID {
-            return outputNodePosition(in: patchAreaRect(in: canvasSize))
-        }
-        guard let box = viewModel.rackBoxes.first(where: { $0.id == nodeID }) else { return nil }
-        return displayPosition(for: box, in: canvasSize)
+    private func moduleFrame(for nodeID: UUID, canvasSize: CGSize) -> CGRect? {
+        let orderedIDs = [viewModel.inputNodeID] + viewModel.rackBoxes.map(\.id) + [viewModel.outputNodeID]
+        guard let index = orderedIDs.firstIndex(of: nodeID) else { return nil }
+        let rack = rackFrame(in: canvasSize)
+        let y = rack.minY + CGFloat(index) * (RackTheme.verticalModuleHeight + RackTheme.verticalRackGap)
+        return CGRect(x: rack.minX, y: y, width: rack.width, height: RackTheme.verticalModuleHeight)
     }
 
     private func inputPortPoint(for nodeID: UUID, canvasSize: CGSize) -> CGPoint? {
-        guard let center = nodeCenter(for: nodeID, canvasSize: canvasSize) else { return nil }
-        return CGPoint(x: center.x - RackTheme.moduleSize.width / 2, y: center.y)
+        guard let frame = moduleFrame(for: nodeID, canvasSize: canvasSize) else { return nil }
+        return CGPoint(x: frame.minX + RackTheme.portInset, y: frame.midY)
     }
 
     private func outputPortPoint(for nodeID: UUID, canvasSize: CGSize) -> CGPoint? {
-        guard let center = nodeCenter(for: nodeID, canvasSize: canvasSize) else { return nil }
-        return CGPoint(x: center.x + RackTheme.moduleSize.width / 2, y: center.y)
+        guard let frame = moduleFrame(for: nodeID, canvasSize: canvasSize) else { return nil }
+        return CGPoint(x: frame.maxX - RackTheme.portInset, y: frame.midY)
     }
 
     private func drawConnections(in context: inout GraphicsContext, canvasSize: CGSize) {
@@ -453,7 +452,7 @@ private struct RackWorkspaceSection: View {
     }
 
     private func drawCable(from start: CGPoint, to end: CGPoint, color: Color, in context: inout GraphicsContext) {
-        let bend = max(72, abs(end.x - start.x) * 0.45)
+        let bend = max(52, abs(end.x - start.x) * 0.28)
         var path = Path()
         path.move(to: start)
         path.addCurve(
@@ -505,30 +504,13 @@ private struct RackWorkspaceSection: View {
             let dx = targetPoint.x - point.x
             let dy = targetPoint.y - point.y
             let distance = sqrt(dx * dx + dy * dy)
-            guard distance < 48 else { continue }
+            guard distance < 52 else { continue }
 
             if let best, best.distance <= distance { continue }
             best = (option.destination, distance)
         }
 
         return best?.destination
-    }
-
-    private func primaryLaneY(in rect: CGRect) -> CGFloat {
-        min(max(rect.minY + RackTheme.moduleSize.height / 2 + 40, 470), rect.maxY - RackTheme.moduleSize.height / 2 - 40)
-    }
-
-    private func clamp(position: CGPoint, in canvasSize: CGSize) -> CGPoint {
-        let halfWidth = RackTheme.moduleSize.width / 2
-        let halfHeight = RackTheme.moduleSize.height / 2
-        let minX = halfWidth + RackTheme.canvasInset
-        let maxX = max(minX, canvasSize.width - halfWidth - RackTheme.canvasInset)
-        let minY = halfHeight + RackTheme.canvasInset
-        let maxY = max(minY, canvasSize.height - halfHeight - RackTheme.canvasInset)
-        return CGPoint(
-            x: min(max(position.x, minX), maxX),
-            y: min(max(position.y, minY), maxY)
-        )
     }
 }
 
@@ -623,9 +605,6 @@ private struct RackBoxNodeView: View {
     let clearPlugin: () -> Void
     let removeBox: () -> Void
     let toggleBypass: () -> Void
-    let moveBox: (CGPoint) -> Void
-
-    @State private var dragOrigin: CGPoint?
 
     private var accent: Color {
         box.assignedPlugin?.format == .audioUnit ? accentCyan : accentOrange
@@ -685,24 +664,12 @@ private struct RackBoxNodeView: View {
             RackOutputPort(label: "OUT", color: accent, onCableChanged: onCableChanged, onCableEnded: onCableEnded)
                 .offset(x: 12)
         }
-        .gesture(
-            DragGesture(minimumDistance: 1, coordinateSpace: .named(RackTheme.workspaceCoordinateSpace))
-                .onChanged { value in
-                    if dragOrigin == nil {
-                        dragOrigin = box.position
-                    }
-                    guard let dragOrigin else { return }
-                    moveBox(CGPoint(x: dragOrigin.x + value.translation.width, y: dragOrigin.y + value.translation.height))
-                }
-                .onEnded { _ in
-                    dragOrigin = nil
-                }
-        )
     }
 }
 
 private struct ModuleFrame<Content: View>: View {
     let accent: Color
+    var height: CGFloat = RackTheme.verticalModuleHeight
     @ViewBuilder let content: Content
 
     var body: some View {
@@ -713,14 +680,39 @@ private struct ModuleFrame<Content: View>: View {
 
             content
                 .padding(14)
-                .frame(width: RackTheme.moduleSize.width, height: RackTheme.moduleSize.height, alignment: .topLeading)
+                .frame(maxWidth: .infinity, minHeight: height - 3, maxHeight: height - 3, alignment: .topLeading)
                 .background(
                     Rectangle()
                         .fill(Color(red: 0.09, green: 0.11, blue: 0.15))
                 )
         }
         .overlay(Rectangle().stroke(Color.white.opacity(0.08), lineWidth: 1))
+        .overlay(alignment: .leading) {
+            rackEar
+        }
+        .overlay(alignment: .trailing) {
+            rackEar
+        }
         .shadow(color: .black.opacity(0.18), radius: 10, y: 10)
+    }
+
+    private var rackEar: some View {
+        VStack(spacing: 16) {
+            RackScrew()
+            Spacer()
+            RackScrew()
+        }
+        .frame(width: 16)
+        .padding(.vertical, 12)
+    }
+}
+
+private struct RackScrew: View {
+    var body: some View {
+        Circle()
+            .fill(Color.black.opacity(0.62))
+            .frame(width: 8, height: 8)
+            .overlay(Circle().stroke(Color.white.opacity(0.16), lineWidth: 1))
     }
 }
 
@@ -776,6 +768,30 @@ private struct RackOutputPort: View {
                     onCableEnded(value.location)
                 }
         )
+    }
+}
+
+private struct RackVerticalRails: View {
+    let frame: CGRect
+    let contentHeight: CGFloat
+
+    var body: some View {
+        ZStack {
+            Rectangle()
+                .stroke(Color.white.opacity(0.07), lineWidth: 1)
+                .frame(width: frame.width, height: contentHeight - frame.minY - RackTheme.canvasInset)
+                .position(x: frame.midX, y: frame.minY + (contentHeight - frame.minY - RackTheme.canvasInset) / 2)
+
+            Rectangle()
+                .fill(Color.white.opacity(0.08))
+                .frame(width: 3, height: contentHeight - frame.minY - RackTheme.canvasInset)
+                .position(x: frame.minX + 13, y: frame.minY + (contentHeight - frame.minY - RackTheme.canvasInset) / 2)
+
+            Rectangle()
+                .fill(Color.white.opacity(0.08))
+                .frame(width: 3, height: contentHeight - frame.minY - RackTheme.canvasInset)
+                .position(x: frame.maxX - 13, y: frame.minY + (contentHeight - frame.minY - RackTheme.canvasInset) / 2)
+        }
     }
 }
 
@@ -1147,9 +1163,12 @@ private enum RackTheme {
     static let cableBlue = Color(red: 0.29, green: 0.83, blue: 0.95)
     static let cableAmber = Color(red: 0.96, green: 0.62, blue: 0.23)
     static let moduleSize = CGSize(width: 224, height: 160)
+    static let verticalModuleHeight: CGFloat = 116
+    static let verticalRackGap: CGFloat = 28
     static let canvasInset: CGFloat = 28
     static let meterDockWidth: CGFloat = 320
     static let meterDockGap: CGFloat = 24
+    static let portInset: CGFloat = 18
     static let labelFont = Font.system(size: 10, weight: .black, design: .monospaced)
 
     static var background: some View {
