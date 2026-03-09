@@ -3,12 +3,14 @@ import AppKit
 import CoreAudioKit
 import SwiftUI
 
-struct PluginEditorSession: Identifiable, Equatable {
+struct PluginEditorSession: Identifiable {
     let boxID: UUID
     let boxTitle: String
-    let plugin: PluginDescriptor
+    let assignedPlugin: PluginDescriptor
+    let editorPlugin: PluginDescriptor
+    let liveAudioUnit: AVAudioUnit?
 
-    var id: String { "\(boxID.uuidString):\(plugin.id)" }
+    var id: String { "\(boxID.uuidString):\(assignedPlugin.id):\(editorPlugin.id)" }
 }
 
 @MainActor
@@ -25,37 +27,56 @@ final class PluginEditorHost: ObservableObject {
     }
 
     func load() {
-        switch session.plugin.format {
+        switch session.editorPlugin.format {
         case .audioUnit:
             loadAudioUnitEditor()
         case .vst2, .vst3:
-            statusMessage = "This build can scan \(session.plugin.format.rawValue) plug-ins, but it does not have a VST host/editor bridge yet."
+            statusMessage = "This build can scan \(session.editorPlugin.format.rawValue) plug-ins, but it does not have a VST host/editor bridge yet."
             viewController = nil
         }
     }
 
     private func loadAudioUnitEditor() {
-        guard let componentDescription = session.plugin.audioUnitComponentDescription else {
+        if let liveAudioUnit = session.liveAudioUnit {
+            audioUnit = liveAudioUnit
+            statusMessage = "Requesting editor..."
+            liveAudioUnit.auAudioUnit.requestViewController { [weak self] controller in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    if let controller {
+                        self.viewController = controller
+                        self.statusMessage = ""
+                    } else {
+                        self.statusMessage = "This Audio Unit does not expose a custom editor."
+                    }
+                }
+            }
+            return
+        }
+
+        guard let componentDescription = session.editorPlugin.audioUnitComponentDescription else {
             statusMessage = "Could not resolve the Audio Unit component."
             return
         }
 
         AVAudioUnit.instantiate(with: componentDescription, options: []) { [weak self] audioUnit, error in
-            DispatchQueue.main.async {
+            let resolved = AudioUnitInstantiationResult(audioUnit: audioUnit, error: error)
+            Task { @MainActor [weak self] in
                 guard let self else { return }
-                if let error {
-                    self.statusMessage = error.localizedDescription
+                if let resolvedError = resolved.error {
+                    self.statusMessage = resolvedError.localizedDescription
                     return
                 }
-                guard let audioUnit else {
+                guard let resolvedAudioUnit = resolved.audioUnit else {
                     self.statusMessage = "The Audio Unit could not be loaded."
                     return
                 }
 
-                self.audioUnit = audioUnit
+                self.audioUnit = resolvedAudioUnit
                 self.statusMessage = "Requesting editor..."
-                audioUnit.auAudioUnit.requestViewController { controller in
-                    DispatchQueue.main.async {
+                resolvedAudioUnit.auAudioUnit.requestViewController { controller in
+                    Task { @MainActor [weak self] in
+                        guard let self else { return }
                         if let controller {
                             self.viewController = controller
                             self.statusMessage = ""
@@ -67,6 +88,11 @@ final class PluginEditorHost: ObservableObject {
             }
         }
     }
+}
+
+private struct AudioUnitInstantiationResult: @unchecked Sendable {
+    let audioUnit: AVAudioUnit?
+    let error: Error?
 }
 
 struct PluginEditorSheet: View {
@@ -83,10 +109,10 @@ struct PluginEditorSheet: View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(session.plugin.name)
+                    Text(session.assignedPlugin.name)
                         .font(.system(size: 22, weight: .bold, design: .rounded))
                         .foregroundStyle(.white)
-                    Text("\(session.boxTitle) • \(session.plugin.format.rawValue)")
+                    Text("\(session.boxTitle) • \(session.assignedPlugin.format.rawValue)")
                         .font(.system(size: 12, weight: .medium, design: .rounded))
                         .foregroundStyle(Color.white.opacity(0.64))
                 }
@@ -105,16 +131,24 @@ struct PluginEditorSheet: View {
             }
 
             if let viewController = host.viewController {
-                PluginEditorViewController(controller: viewController)
-                    .frame(minWidth: 760, minHeight: 520)
-                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                VStack(alignment: .leading, spacing: 10) {
+                    if session.assignedPlugin.id != session.editorPlugin.id {
+                        Text("Using matched Audio Unit editor for this plug-in.")
+                            .font(.system(size: 12, weight: .semibold, design: .rounded))
+                            .foregroundStyle(Color.white.opacity(0.72))
+                    }
+
+                    PluginEditorViewController(controller: viewController)
+                        .frame(minWidth: 760, minHeight: 520)
+                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                }
             } else {
                 VStack(alignment: .leading, spacing: 12) {
                     Text(host.statusMessage)
                         .font(.system(size: 14, weight: .medium, design: .rounded))
                         .foregroundStyle(.white)
 
-                    if session.plugin.format != .audioUnit {
+                    if session.editorPlugin.format != .audioUnit {
                         Text("Only Audio Unit editors can be opened in the current build. VST2/VST3 assignment is catalog-only until a real VST host is integrated.")
                             .font(.system(size: 12, weight: .medium, design: .rounded))
                             .foregroundStyle(Color.white.opacity(0.64))

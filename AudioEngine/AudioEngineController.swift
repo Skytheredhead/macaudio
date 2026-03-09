@@ -1,10 +1,11 @@
 import AudioToolbox
+@preconcurrency import AVFoundation
 import Combine
 import CoreAudio
 import Foundation
 import QuartzCore
 
-final class AudioEngineController: ObservableObject {
+final class AudioEngineController: ObservableObject, @unchecked Sendable {
     private static let noInputFramesWarning = "No input frames from the selected microphone."
     private static let recoveringInputWarning = "Recovering microphone input..."
 
@@ -34,13 +35,16 @@ final class AudioEngineController: ObservableObject {
     @Published var xrunsUnderruns: UInt32 = 0
     @Published var warningMessage: String?
     @Published var routeStatus = "No output"
+    @Published private(set) var transportState: AudioTransportState = .stopped
 
     private let maxFramesPerBuffer = 2048
     private let routeRingName = "/macaudio-out"
     private let monitorRingName = "/macaudio-mon"
     private let hardwareObserverQueue = DispatchQueue(label: "com.skylarenns.macaudio.hardware", qos: .utility)
     private let controlQueue = DispatchQueue(label: "com.skylarenns.macaudio.control", qos: .userInitiated)
+    private let controlQueueKey = DispatchSpecificKey<UInt8>()
     private let restartLock = NSLock()
+    private let realtimeSnapshotLock = NSLock()
 
     private var dspChain: OpaquePointer?
     private var inputUnit: AudioUnit?
@@ -55,6 +59,11 @@ final class AudioEngineController: ObservableObject {
     private var processScratch: UnsafeMutablePointer<Float>
     private var routeScratch: UnsafeMutablePointer<Float>
     private var monitorScratch: UnsafeMutablePointer<Float>
+    private var stereoLeftScratch: UnsafeMutablePointer<Float>
+    private var stereoRightScratch: UnsafeMutablePointer<Float>
+    private var insertInputLeftScratch: UnsafeMutablePointer<Float>
+    private var insertInputRightScratch: UnsafeMutablePointer<Float>
+    private var interleavedStereoScratch: UnsafeMutablePointer<Float>
     private var inputBufferListPointer: UnsafeMutablePointer<AudioBufferList>?
 
     private var meterTimer: DispatchSourceTimer?
@@ -66,6 +75,12 @@ final class AudioEngineController: ObservableObject {
     private var currentSettings = VoicePreset.cleanVoice.settings
     private var xrunAutoFallbackTriggered = false
     private var inputRecoveryAttempts = 0
+    private var pendingInsertPlugins: [InsertChainStage] = []
+    private var pendingInsertSignature: [String] = []
+    private var activeInsertSignature: [String] = []
+    private var activeInsertChain: HostedAudioUnitInsertChain?
+    private var pluginRenderSampleTime: Double = 0
+    private var latestRealtimeSnapshot = RealtimeMeterSnapshot()
 
     private var routeOutputContext: OutputRenderContext?
     private var monitorOutputContext: OutputRenderContext?
@@ -73,8 +88,14 @@ final class AudioEngineController: ObservableObject {
 
     init() {
         processScratch = .allocate(capacity: maxFramesPerBuffer)
-        routeScratch = .allocate(capacity: maxFramesPerBuffer)
-        monitorScratch = .allocate(capacity: maxFramesPerBuffer)
+        routeScratch = .allocate(capacity: maxFramesPerBuffer * 2)
+        monitorScratch = .allocate(capacity: maxFramesPerBuffer * 2)
+        stereoLeftScratch = .allocate(capacity: maxFramesPerBuffer)
+        stereoRightScratch = .allocate(capacity: maxFramesPerBuffer)
+        insertInputLeftScratch = .allocate(capacity: maxFramesPerBuffer)
+        insertInputRightScratch = .allocate(capacity: maxFramesPerBuffer)
+        interleavedStereoScratch = .allocate(capacity: maxFramesPerBuffer * 2)
+        controlQueue.setSpecific(key: controlQueueKey, value: 1)
         startObservingHardwareChanges()
         refreshInputDevices()
     }
@@ -85,6 +106,11 @@ final class AudioEngineController: ObservableObject {
         processScratch.deallocate()
         routeScratch.deallocate()
         monitorScratch.deallocate()
+        stereoLeftScratch.deallocate()
+        stereoRightScratch.deallocate()
+        insertInputLeftScratch.deallocate()
+        insertInputRightScratch.deallocate()
+        interleavedStereoScratch.deallocate()
     }
 
     var effectiveBufferFrames: UInt32 {
@@ -98,6 +124,28 @@ final class AudioEngineController: ObservableObject {
             return 128
         }
         return 64
+    }
+
+    var transportButtonTitle: String {
+        switch transportState {
+        case .stopped:
+            return "Start"
+        case .starting:
+            return "Starting"
+        case .running:
+            return "Stop"
+        case .stopping:
+            return "Stopping"
+        }
+    }
+
+    var isTransportTransitioning: Bool {
+        switch transportState {
+        case .starting, .stopping:
+            return true
+        case .stopped, .running:
+            return false
+        }
     }
 
     func refreshInputDevices() {
@@ -131,7 +179,29 @@ final class AudioEngineController: ObservableObject {
         pushParametersToDSP()
     }
 
+    func updateInsertChain(_ plugins: [InsertChainStage]) {
+        pendingInsertPlugins = plugins
+        pendingInsertSignature = insertSignature(for: plugins)
+        guard isRunning else { return }
+        guard pendingInsertSignature != activeInsertSignature else { return }
+        restartForConfigurationChange(message: "Updating insert chain...")
+    }
+
+    func liveAudioUnit(for boxID: UUID) -> AVAudioUnit? {
+        controlQueueSync {
+            activeInsertChain?.liveAudioUnit(for: boxID)
+        }
+    }
+
+    func liveProcessorPlugin(for boxID: UUID) -> PluginDescriptor? {
+        controlQueueSync {
+            activeInsertChain?.processorPlugin(for: boxID)
+        }
+    }
+
     func start() {
+        guard !isRunning, transportState != .starting else { return }
+        publish { self.transportState = .starting }
         let generation = nextRestartGeneration()
         controlQueue.async { [weak self] in
             guard let self, self.isRestartCurrent(generation) else { return }
@@ -140,6 +210,11 @@ final class AudioEngineController: ObservableObject {
     }
 
     func stop() {
+        guard isRunning || transportState == .starting else {
+            publish { self.transportState = .stopped }
+            return
+        }
+        publish { self.transportState = .stopping }
         let generation = nextRestartGeneration()
         controlQueue.async { [weak self] in
             guard let self, self.isRestartCurrent(generation) else { return }
@@ -162,13 +237,21 @@ final class AudioEngineController: ObservableObject {
             dsp_chain_destroy(chain)
             dspChain = nil
         }
+        releaseInsertChain()
+        activeInsertSignature = []
+        withRealtimeSnapshotLock {
+            latestRealtimeSnapshot = RealtimeMeterSnapshot()
+        }
 
         closeRing(&routeWriter)
         closeRing(&routeReader)
         closeRing(&monitorWriter)
         closeRing(&monitorReader)
 
-        publish { self.isRunning = false }
+        publish {
+            self.isRunning = false
+            self.transportState = .stopped
+        }
     }
 
     func applyLatencyQuality(_ value: Float) {
@@ -227,18 +310,27 @@ final class AudioEngineController: ObservableObject {
             )
         }
 
-        guard !startingState.isRunning else { return }
+        guard !startingState.isRunning else {
+            publish { self.transportState = .running }
+            return
+        }
 
         publish { self.warningMessage = nil }
         xrunAutoFallbackTriggered = false
         if resetInputRecovery {
             inputRecoveryAttempts = 0
         }
+        withRealtimeSnapshotLock {
+            latestRealtimeSnapshot = RealtimeMeterSnapshot()
+        }
 
         let inputDeviceID = startingState.selectedInput == 0 ? AudioDeviceCatalog.defaultInputDeviceID() : startingState.selectedInput
         let outputDeviceID = startingState.selectedOutput == 0 ? AudioDeviceCatalog.preferredOutputDeviceID() : startingState.selectedOutput
         guard inputDeviceID != 0, outputDeviceID != 0 else {
-            publish { self.warningMessage = "Connect an input and output device and retry." }
+            publish {
+                self.warningMessage = "Connect an input and output device and retry."
+                self.transportState = .stopped
+            }
             return
         }
 
@@ -258,6 +350,14 @@ final class AudioEngineController: ObservableObject {
 
         dspChain = dsp_chain_create(sampleRate, 1)
         pushParametersToDSP()
+        do {
+            try buildInsertChain(sampleRate: sampleRate)
+        } catch {
+            publish { self.warningMessage = error.localizedDescription }
+            releaseInsertChain()
+            activeInsertSignature = []
+        }
+        pluginRenderSampleTime = 0
 
         do {
             try setupInputUnit(deviceID: inputDeviceID, sampleRate: sampleRate)
@@ -269,13 +369,17 @@ final class AudioEngineController: ObservableObject {
             try startOutputUnits()
             publish {
                 self.isRunning = true
+                self.transportState = .running
                 self.routeStatus = AudioDeviceCatalog.deviceName(outputDeviceID)
             }
             lastInputTapTime = CACurrentMediaTime()
             inputWatchdogGraceUntil = lastInputTapTime + 3.0
             startMeterTimer()
         } catch {
-            publish { self.warningMessage = error.localizedDescription }
+            publish {
+                self.warningMessage = error.localizedDescription
+                self.transportState = .stopped
+            }
             stopSynchronously()
         }
     }
@@ -304,7 +408,7 @@ final class AudioEngineController: ObservableObject {
         closeRing(&monitorReader)
 
         var routeWriter: OpaquePointer?
-        let routeWriterResult = routeRingName.withCString { vm_ring_create_writer($0, 8192, 1, &routeWriter) }
+        let routeWriterResult = routeRingName.withCString { vm_ring_create_writer($0, 8192, 2, &routeWriter) }
         guard routeWriterResult == 0, let routeWriter else {
             publish { self.warningMessage = "Output route buffer failed (\(routeWriterResult))." }
             return
@@ -319,7 +423,7 @@ final class AudioEngineController: ObservableObject {
         }
 
         var monitorWriter: OpaquePointer?
-        let monitorWriterResult = monitorRingName.withCString { vm_ring_create_writer($0, 8192, 1, &monitorWriter) }
+        let monitorWriterResult = monitorRingName.withCString { vm_ring_create_writer($0, 8192, 2, &monitorWriter) }
         if monitorWriterResult == 0, let monitorWriter {
             vm_ring_set_sample_rate(monitorWriter, UInt32(sampleRate))
             self.monitorWriter = monitorWriter
@@ -340,11 +444,21 @@ final class AudioEngineController: ObservableObject {
             dsp_chain_process_mono(chain, processScratch, UInt32(frameCount))
         }
 
+        for frame in 0..<frameCount {
+            let sample = processScratch[frame]
+            stereoLeftScratch[frame] = sample
+            stereoRightScratch[frame] = sample
+        }
+
+        processInsertChain(frameCount: UInt32(frameCount))
+        interleaveStereo(frameCount: frameCount)
+        updateRealtimeSnapshot(frameCount: frameCount)
+
         if let routeWriter {
-            _ = vm_ring_write(routeWriter, processScratch, UInt32(frameCount))
+            _ = vm_ring_write(routeWriter, interleavedStereoScratch, UInt32(frameCount))
         }
         if monitorEnabled, let monitorWriter {
-            _ = vm_ring_write(monitorWriter, processScratch, UInt32(frameCount))
+            _ = vm_ring_write(monitorWriter, interleavedStereoScratch, UInt32(frameCount))
         }
     }
 
@@ -599,12 +713,15 @@ final class AudioEngineController: ObservableObject {
         let limitedGain = min(max(gain, 0), 2)
         let safeCeiling: Float = 0.98
         let buffers = UnsafeMutableAudioBufferListPointer(ioData)
+        let channels = max(1, Int(reader.map(vm_ring_get_channels) ?? 2))
         for bufferIndex in 0..<buffers.count {
             guard let mData = buffers[bufferIndex].mData else { continue }
             let out = mData.assumingMemoryBound(to: Float.self)
+            let sourceChannel = min(bufferIndex, channels - 1)
 
             for frame in 0..<readFrames {
-                var sample = scratch[frame] * limitedGain
+                let sampleIndex = frame * channels + sourceChannel
+                var sample = scratch[sampleIndex] * limitedGain
                 sample = max(min(sample, safeCeiling), -safeCeiling)
                 out[frame] = sample
             }
@@ -653,6 +770,77 @@ final class AudioEngineController: ObservableObject {
         dsp_chain_set_parameters(chain, params)
     }
 
+    private func buildInsertChain(sampleRate: Double) throws {
+        releaseInsertChain()
+        guard !pendingInsertPlugins.isEmpty else {
+            activeInsertSignature = []
+            return
+        }
+
+        var insertStages: [InsertChainStage] = []
+        var failedPluginNames: [String] = []
+
+        for stage in pendingInsertPlugins {
+            if stage.processorPlugin.audioUnitComponentDescription != nil {
+                insertStages.append(stage)
+            } else {
+                failedPluginNames.append(stage.assignedPlugin.name)
+            }
+        }
+
+        if !insertStages.isEmpty {
+            activeInsertChain = try HostedAudioUnitInsertChain(
+                stages: insertStages,
+                sampleRate: sampleRate,
+                maximumFrames: UInt32(maxFramesPerBuffer)
+            )
+            activeInsertSignature = pendingInsertSignature
+        } else {
+            activeInsertChain = nil
+            activeInsertSignature = []
+        }
+        if !failedPluginNames.isEmpty {
+            let failedList = failedPluginNames.joined(separator: ", ")
+            publish {
+                self.warningMessage = "Some plug-ins could not be loaded into the live chain: \(failedList)"
+            }
+        }
+    }
+
+    private func releaseInsertChain() {
+        activeInsertChain?.teardown()
+        activeInsertChain = nil
+    }
+
+    private func processInsertChain(frameCount: UInt32) {
+        guard let activeInsertChain else { return }
+
+        memcpy(insertInputLeftScratch, stereoLeftScratch, Int(frameCount) * MemoryLayout<Float>.size)
+        memcpy(insertInputRightScratch, stereoRightScratch, Int(frameCount) * MemoryLayout<Float>.size)
+        let status = activeInsertChain.process(
+            frameCount: frameCount,
+            sampleTime: pluginRenderSampleTime,
+            inputLeft: insertInputLeftScratch,
+            inputRight: insertInputRightScratch,
+            outputLeft: stereoLeftScratch,
+            outputRight: stereoRightScratch
+        )
+        if status != noErr {
+            memcpy(stereoLeftScratch, insertInputLeftScratch, Int(frameCount) * MemoryLayout<Float>.size)
+            memcpy(stereoRightScratch, insertInputRightScratch, Int(frameCount) * MemoryLayout<Float>.size)
+        }
+
+        pluginRenderSampleTime += Double(frameCount)
+    }
+
+    private func interleaveStereo(frameCount: Int) {
+        guard frameCount > 0 else { return }
+        for frame in 0..<frameCount {
+            interleavedStereoScratch[(frame * 2)] = stereoLeftScratch[frame]
+            interleavedStereoScratch[(frame * 2) + 1] = stereoRightScratch[frame]
+        }
+    }
+
     private func startMeterTimer() {
         meterTimer?.cancel()
         let timer = DispatchSource.makeTimerSource(queue: .main)
@@ -678,15 +866,16 @@ final class AudioEngineController: ObservableObject {
             clippedSamples: 0
         )
         dsp_chain_copy_meters(chain, &meters)
+        let realtimeSnapshot = withRealtimeSnapshotLock { latestRealtimeSnapshot }
 
         inputPeak = meters.inputPeak
         inputRMS = meters.inputRMS
-        outputPeak = meters.outputPeak
-        outputRMS = meters.outputRMS
+        outputPeak = realtimeSnapshot.outputPeak
+        outputRMS = realtimeSnapshot.outputRMS
         compressorInputRMS = meters.compressorInputRMS
         compressorOutputRMS = meters.compressorOutputRMS
         gainReductionDB = meters.gainReductionDB
-        clippedSamples = meters.clippedSamples
+        clippedSamples = max(meters.clippedSamples, realtimeSnapshot.clippedSamples)
 
         if let ring = routeWriter {
             var stats = VMRealtimeStats(overruns: 0, underruns: 0, frameClock: 0, writeIndex: 0, readIndex: 0)
@@ -849,7 +1038,7 @@ final class AudioEngineController: ObservableObject {
         return restartGeneration == generation
     }
 
-    private func publish(_ update: @escaping () -> Void) {
+    private func publish(_ update: @Sendable @escaping () -> Void) {
         if Thread.isMainThread {
             update()
         } else {
@@ -857,11 +1046,61 @@ final class AudioEngineController: ObservableObject {
         }
     }
 
-    private func syncOnMain<T>(_ block: @escaping () -> T) -> T {
+    private func controlQueueSync<T>(_ block: () -> T) -> T {
+        if DispatchQueue.getSpecific(key: controlQueueKey) != nil {
+            return block()
+        }
+        return controlQueue.sync(execute: block)
+    }
+
+    private func syncOnMain<T>(_ block: @Sendable @escaping () -> T) -> T {
         if Thread.isMainThread {
             return block()
         }
         return DispatchQueue.main.sync(execute: block)
+    }
+
+    private func insertSignature(for plugins: [InsertChainStage]) -> [String] {
+        plugins.map { stage in
+            [
+                stage.boxID.uuidString,
+                stage.assignedPlugin.id,
+                stage.processorPlugin.id
+            ].joined(separator: "|")
+        }
+    }
+
+    private func updateRealtimeSnapshot(frameCount: Int) {
+        guard frameCount > 0 else { return }
+
+        var peak: Float = 0
+        var rmsAccumulator: Double = 0
+        var clipped: UInt32 = 0
+
+        for frame in 0..<frameCount {
+            let left = stereoLeftScratch[frame]
+            let right = stereoRightScratch[frame]
+            peak = max(peak, abs(left), abs(right))
+            rmsAccumulator += Double(left * left)
+            rmsAccumulator += Double(right * right)
+            if abs(left) > 0.98 || abs(right) > 0.98 {
+                clipped &+= 1
+            }
+        }
+
+        let rms = Float(sqrt(rmsAccumulator / Double(frameCount * 2)))
+        withRealtimeSnapshotLock {
+            latestRealtimeSnapshot.outputPeak = peak
+            latestRealtimeSnapshot.outputRMS = rms
+            latestRealtimeSnapshot.clippedSamples = latestRealtimeSnapshot.clippedSamples &+ clipped
+        }
+    }
+
+    @discardableResult
+    private func withRealtimeSnapshotLock<T>(_ block: () -> T) -> T {
+        realtimeSnapshotLock.lock()
+        defer { realtimeSnapshotLock.unlock() }
+        return block()
     }
 }
 
@@ -880,6 +1119,13 @@ private enum OutputRenderKind {
     case monitor
 }
 
+enum AudioTransportState: Sendable {
+    case stopped
+    case starting
+    case running
+    case stopping
+}
+
 private enum AudioEngineError: LocalizedError {
     case halComponentUnavailable
     case halConfigurationFailed(String)
@@ -891,5 +1137,220 @@ private enum AudioEngineError: LocalizedError {
         case .halConfigurationFailed(let message):
             return message
         }
+    }
+}
+
+private struct RealtimeMeterSnapshot {
+    var outputPeak: Float = 0
+    var outputRMS: Float = 0
+    var clippedSamples: UInt32 = 0
+}
+
+private final class HostedAudioUnitInsertChain {
+    private struct HostedStage {
+        let stage: InsertChainStage
+        let audioUnit: AVAudioUnit
+    }
+
+    private final class RenderSourceState {
+        var currentInputLeft: UnsafeMutablePointer<Float>?
+        var currentInputRight: UnsafeMutablePointer<Float>?
+        var currentFrameCount: Int = 0
+        var readOffset: Int = 0
+
+        func render(frameCount: AVAudioFrameCount, audioBufferList: UnsafeMutablePointer<AudioBufferList>) -> OSStatus {
+            let buffers = UnsafeMutableAudioBufferListPointer(audioBufferList)
+            guard buffers.count >= 2 else { return kAudio_ParamError }
+            guard let inputLeft = currentInputLeft, let inputRight = currentInputRight else {
+                for buffer in buffers {
+                    if let data = buffer.mData {
+                        data.assumingMemoryBound(to: Float.self).initialize(repeating: 0, count: Int(frameCount))
+                    }
+                }
+                return noErr
+            }
+
+            let availableFrames = max(0, currentFrameCount - readOffset)
+            let copyFrames = min(Int(frameCount), availableFrames)
+
+            if let leftData = buffers[0].mData {
+                memcpy(leftData, inputLeft.advanced(by: readOffset), copyFrames * MemoryLayout<Float>.size)
+                if copyFrames < Int(frameCount) {
+                    leftData.assumingMemoryBound(to: Float.self).advanced(by: copyFrames).initialize(repeating: 0, count: Int(frameCount) - copyFrames)
+                }
+                buffers[0].mDataByteSize = UInt32(Int(frameCount) * MemoryLayout<Float>.size)
+            }
+            if let rightData = buffers[1].mData {
+                memcpy(rightData, inputRight.advanced(by: readOffset), copyFrames * MemoryLayout<Float>.size)
+                if copyFrames < Int(frameCount) {
+                    rightData.assumingMemoryBound(to: Float.self).advanced(by: copyFrames).initialize(repeating: 0, count: Int(frameCount) - copyFrames)
+                }
+                buffers[1].mDataByteSize = UInt32(Int(frameCount) * MemoryLayout<Float>.size)
+            }
+
+            readOffset += copyFrames
+            return noErr
+        }
+    }
+
+    private let engine: AVAudioEngine
+    private let renderSourceState: RenderSourceState
+    private let renderBuffer: AVAudioPCMBuffer
+    private let maximumFrames: UInt32
+    private let format: AVAudioFormat
+    private let hostedStages: [HostedStage]
+
+    init(stages: [InsertChainStage], sampleRate: Double, maximumFrames: UInt32) throws {
+        guard !stages.isEmpty else {
+            throw AudioEngineError.halConfigurationFailed("No insert stages were provided.")
+        }
+        guard let format = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: sampleRate,
+            channels: 2,
+            interleaved: false
+        ) else {
+            throw AudioEngineError.halConfigurationFailed("Could not create the insert-chain stream format.")
+        }
+        guard let renderBuffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: maximumFrames) else {
+            throw AudioEngineError.halConfigurationFailed("Could not allocate the insert-chain render buffer.")
+        }
+
+        self.engine = AVAudioEngine()
+        self.renderSourceState = RenderSourceState()
+        self.renderBuffer = renderBuffer
+        self.maximumFrames = maximumFrames
+        self.format = format
+
+        let sourceState = self.renderSourceState
+        let sourceNode = AVAudioSourceNode(format: format) { _, _, frameCount, audioBufferList in
+            sourceState.render(frameCount: frameCount, audioBufferList: audioBufferList)
+        }
+
+        engine.attach(sourceNode)
+
+        var previousNode: AVAudioNode = sourceNode
+        var builtStages: [HostedStage] = []
+
+        for stage in stages {
+            guard let componentDescription = stage.processorPlugin.audioUnitComponentDescription else {
+                throw AudioEngineError.halConfigurationFailed("Plug-in \(stage.assignedPlugin.name) is not an Audio Unit.")
+            }
+
+            let audioUnit = try Self.instantiateAudioUnit(componentDescription: componentDescription)
+            engine.attach(audioUnit)
+            engine.connect(previousNode, to: audioUnit, format: format)
+            previousNode = audioUnit
+            builtStages.append(HostedStage(stage: stage, audioUnit: audioUnit))
+        }
+
+        engine.connect(previousNode, to: engine.mainMixerNode, format: format)
+        try engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: maximumFrames)
+        try engine.start()
+
+        self.hostedStages = builtStages
+        self.renderBuffer.frameLength = maximumFrames
+    }
+
+    func process(
+        frameCount: UInt32,
+        sampleTime _: Double,
+        inputLeft: UnsafeMutablePointer<Float>,
+        inputRight: UnsafeMutablePointer<Float>,
+        outputLeft: UnsafeMutablePointer<Float>,
+        outputRight: UnsafeMutablePointer<Float>
+    ) -> OSStatus {
+        guard frameCount > 0, frameCount <= maximumFrames else {
+            return noErr
+        }
+
+        renderSourceState.currentInputLeft = inputLeft
+        renderSourceState.currentInputRight = inputRight
+        renderSourceState.currentFrameCount = Int(frameCount)
+        renderSourceState.readOffset = 0
+        renderBuffer.frameLength = frameCount
+
+        do {
+            let status = try engine.renderOffline(frameCount, to: renderBuffer)
+            guard status == .success || status == .insufficientDataFromInputNode,
+                  let channels = renderBuffer.floatChannelData,
+                  renderBuffer.format.channelCount >= 2 else {
+                return kAudio_ParamError
+            }
+
+            memcpy(outputLeft, channels[0], Int(frameCount) * MemoryLayout<Float>.size)
+            memcpy(outputRight, channels[1], Int(frameCount) * MemoryLayout<Float>.size)
+            return noErr
+        } catch {
+            return kAudio_ParamError
+        }
+    }
+
+    func liveAudioUnit(for boxID: UUID) -> AVAudioUnit? {
+        hostedStages.first(where: { $0.stage.boxID == boxID })?.audioUnit
+    }
+
+    func processorPlugin(for boxID: UUID) -> PluginDescriptor? {
+        hostedStages.first(where: { $0.stage.boxID == boxID })?.stage.processorPlugin
+    }
+
+    func teardown() {
+        engine.stop()
+        engine.disableManualRenderingMode()
+    }
+
+    private static func instantiateAudioUnit(componentDescription: AudioComponentDescription) throws -> AVAudioUnit {
+        final class Box: @unchecked Sendable {
+            var audioUnit: AVAudioUnit?
+            var error: Error?
+        }
+
+        let box = Box()
+        let semaphore = DispatchSemaphore(value: 0)
+
+        AVAudioUnit.instantiate(with: componentDescription, options: []) { audioUnit, error in
+            box.audioUnit = audioUnit
+            box.error = error
+            semaphore.signal()
+        }
+
+        semaphore.wait()
+
+        if let error = box.error {
+            throw error
+        }
+        guard let audioUnit = box.audioUnit else {
+            throw AudioEngineError.halConfigurationFailed("Could not instantiate the Audio Unit.")
+        }
+        return audioUnit
+    }
+}
+
+private extension PluginDescriptor {
+    var audioUnitComponentDescription: AudioComponentDescription? {
+        guard format == .audioUnit, id.hasPrefix("au:") else { return nil }
+        let payload = String(id.dropFirst(3))
+        let pieces = payload.split(separator: ".")
+        guard pieces.count == 3,
+              let type = OSType(pieces[0]),
+              let subtype = OSType(pieces[1]),
+              let manufacturer = OSType(pieces[2]) else {
+            return nil
+        }
+
+        return AudioComponentDescription(
+            componentType: type,
+            componentSubType: subtype,
+            componentManufacturer: manufacturer,
+            componentFlags: 0,
+            componentFlagsMask: 0
+        )
+    }
+}
+
+private extension OSType {
+    init?(_ text: Substring) {
+        guard let value = UInt32(String(text)) else { return nil }
+        self = value
     }
 }

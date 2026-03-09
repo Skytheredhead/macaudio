@@ -41,6 +41,13 @@ struct PluginDescriptor: Identifiable, Hashable, Codable, Sendable {
     let bundlePath: String?
 }
 
+struct InsertChainStage: Hashable, Sendable {
+    let boxID: UUID
+    let boxTitle: String
+    let assignedPlugin: PluginDescriptor
+    let processorPlugin: PluginDescriptor
+}
+
 struct RackInsertSlot: Identifiable, Equatable, Codable, Sendable {
     let id: UUID
     var title: String
@@ -65,6 +72,7 @@ struct RackInsertSlot: Identifiable, Equatable, Codable, Sendable {
 struct PluginBrowserTarget: Identifiable, Equatable, Sendable {
     let slotID: UUID
     let slotTitle: String
+    let removeIfCancelled: Bool
 
     var id: UUID { slotID }
 }

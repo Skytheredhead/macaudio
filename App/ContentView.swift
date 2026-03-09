@@ -9,18 +9,18 @@ struct ContentView: View {
             RackTheme.background
 
             VStack(spacing: 0) {
-                HeaderBar(viewModel: viewModel, accentOrange: accentOrange, accentCyan: accentCyan)
+                HeaderBar(viewModel: viewModel, engine: viewModel.engine, accentOrange: accentOrange, accentCyan: accentCyan)
                     .padding(.horizontal, 20)
                     .padding(.top, 18)
 
                 HStack(spacing: 0) {
-                    SidebarSection(viewModel: viewModel, accentOrange: accentOrange, accentCyan: accentCyan)
+                    SidebarSection(viewModel: viewModel, engine: viewModel.engine, accentOrange: accentOrange, accentCyan: accentCyan)
                         .frame(width: 300)
 
                     Divider()
                         .overlay(Color.white.opacity(0.08))
 
-                    RackWorkspaceSection(viewModel: viewModel, accentOrange: accentOrange, accentCyan: accentCyan)
+                    RackWorkspaceSection(viewModel: viewModel, engine: viewModel.engine, accentOrange: accentOrange, accentCyan: accentCyan)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
                 .padding(.horizontal, 20)
@@ -62,21 +62,16 @@ struct ContentView: View {
 
 private struct HeaderBar: View {
     @ObservedObject var viewModel: MainViewModel
+    @ObservedObject var engine: AudioEngineController
     let accentOrange: Color
     let accentCyan: Color
 
     var body: some View {
         HStack(spacing: 16) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("MacAudio")
-                    .font(.custom("Avenir Next Condensed", size: 40))
-                    .fontWeight(.heavy)
-                    .foregroundStyle(.white)
-
-                Text("Patch the rack. Route the voice.")
-                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(Color.white.opacity(0.45))
-            }
+            Text("MacAudio")
+                .font(.custom("Avenir Next Condensed", size: 40))
+                .fontWeight(.heavy)
+                .foregroundStyle(.white)
 
             Spacer()
 
@@ -94,8 +89,7 @@ private struct HeaderBar: View {
                 Picker("Sample Rate", selection: Binding(
                     get: { viewModel.engine.selectedSampleRate },
                     set: {
-                        viewModel.engine.selectedSampleRate = $0
-                        viewModel.updateIOConfiguration()
+                        viewModel.updateSampleRate($0)
                     }
                 )) {
                     ForEach(SampleRateOption.allCases) { option in
@@ -106,8 +100,7 @@ private struct HeaderBar: View {
                 Picker("Buffer", selection: Binding(
                     get: { viewModel.engine.selectedBufferSize },
                     set: {
-                        viewModel.engine.selectedBufferSize = $0
-                        viewModel.updateIOConfiguration()
+                        viewModel.updateBufferSize($0)
                     }
                 )) {
                     ForEach(BufferSizeOption.allCases) { option in
@@ -125,7 +118,7 @@ private struct HeaderBar: View {
             .menuStyle(.borderlessButton)
             .buttonStyle(.plain)
 
-            Button(viewModel.engine.isRunning ? "Stop" : "Start") {
+            Button(engine.transportButtonTitle) {
                 viewModel.toggleRunState()
             }
             .buttonStyle(.plain)
@@ -135,6 +128,7 @@ private struct HeaderBar: View {
             .padding(.horizontal, 20)
             .padding(.vertical, 12)
             .background(Rectangle().fill(accentOrange))
+            .disabled(engine.isTransportTransitioning)
         }
         .padding(.horizontal, 18)
         .padding(.vertical, 16)
@@ -147,10 +141,9 @@ private struct HeaderBar: View {
 
 private struct SidebarSection: View {
     @ObservedObject var viewModel: MainViewModel
+    @ObservedObject var engine: AudioEngineController
     let accentOrange: Color
     let accentCyan: Color
-
-    private var engine: AudioEngineController { viewModel.engine }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -160,8 +153,7 @@ private struct SidebarSection: View {
                 RackTheme.menuField("Input", selectionText: selectedInputName) {
                     ForEach(engine.availableInputDevices) { device in
                         Button(device.name) {
-                            engine.selectedInputDeviceID = device.id
-                            viewModel.updateInputDevice()
+                            viewModel.selectInputDevice(device.id)
                         }
                     }
                 }
@@ -169,8 +161,7 @@ private struct SidebarSection: View {
                 RackTheme.menuField("Route Output", selectionText: selectedOutputName) {
                     ForEach(engine.availableOutputDevices) { device in
                         Button(device.name) {
-                            engine.selectedOutputDeviceID = device.id
-                            viewModel.updateOutputDevice()
+                            viewModel.selectOutputDevice(device.id)
                         }
                     }
                 }
@@ -184,8 +175,7 @@ private struct SidebarSection: View {
                         Toggle("", isOn: Binding(
                             get: { engine.monitorEnabled },
                             set: {
-                                engine.monitorEnabled = $0
-                                viewModel.updateMonitorEnabled()
+                                viewModel.setMonitorEnabled($0)
                             }
                         ))
                         .labelsHidden()
@@ -196,8 +186,7 @@ private struct SidebarSection: View {
                     RackTheme.menuField("Monitor Device", selectionText: selectedMonitorName, disabled: !engine.monitorEnabled) {
                         ForEach(engine.availableOutputDevices) { device in
                             Button(device.name) {
-                                engine.selectedMonitorDeviceID = device.id
-                                viewModel.updateMonitorDevice()
+                                viewModel.selectMonitorDevice(device.id)
                             }
                         }
                     }
@@ -271,6 +260,7 @@ private struct SidebarSection: View {
 
 private struct RackWorkspaceSection: View {
     @ObservedObject var viewModel: MainViewModel
+    @ObservedObject var engine: AudioEngineController
     let accentOrange: Color
     let accentCyan: Color
 
@@ -291,11 +281,6 @@ private struct RackWorkspaceSection: View {
                             RackWorkspaceGrid()
 
                             RackVerticalRails(frame: rackFrame(in: contentSize), contentHeight: contentSize.height)
-
-                            Canvas { context, _ in
-                                drawConnections(in: &context, canvasSize: contentSize)
-                            }
-                            .allowsHitTesting(false)
 
                             if let frame = moduleFrame(for: viewModel.inputNodeID, canvasSize: contentSize) {
                                 InputNodeView(
@@ -319,6 +304,8 @@ private struct RackWorkspaceSection: View {
                                         accentOrange: accentOrange,
                                         accentCyan: accentCyan,
                                         isInputHighlighted: highlightedDestination == .box(box.id),
+                                        canOpenEditor: viewModel.canOpenPluginEditor(for: box.id),
+                                        editorButtonTitle: viewModel.editorButtonTitle(for: box.id),
                                         onCableChanged: { start, current in
                                             updateCable(from: .box(box.id), start: start, current: current, canvasSize: contentSize)
                                         },
@@ -345,6 +332,11 @@ private struct RackWorkspaceSection: View {
                                 .frame(width: frame.width, height: frame.height)
                                 .position(CGPoint(x: frame.midX, y: frame.midY))
                             }
+
+                            Canvas { context, _ in
+                                drawConnections(in: &context, canvasSize: contentSize)
+                            }
+                            .allowsHitTesting(false)
                         }
                         .frame(width: canvasSize.width, height: contentSize.height, alignment: .topLeading)
                         .coordinateSpace(name: RackTheme.workspaceCoordinateSpace)
@@ -352,13 +344,13 @@ private struct RackWorkspaceSection: View {
                         .clipped()
                         .contextMenu {
                             Button("Add Box") {
-                                viewModel.addRackBox()
+                                viewModel.addRackBoxAndChoosePlugin()
                             }
                         }
                     }
                     .clipped()
 
-                    MeterDock(engine: viewModel.engine, accentOrange: accentOrange, accentCyan: accentCyan)
+                    MeterDock(engine: engine, accentOrange: accentOrange, accentCyan: accentCyan)
                         .frame(width: RackTheme.meterDockWidth)
                         .padding(18)
                 }
@@ -369,20 +361,15 @@ private struct RackWorkspaceSection: View {
 
     private var workspaceHeader: some View {
         HStack {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Rack")
-                    .font(.custom("Avenir Next Condensed", size: 26))
-                    .fontWeight(.bold)
-                    .foregroundStyle(.white)
-                Text("Stack modules. Patch OUT to IN.")
-                    .font(.system(size: 11, weight: .bold, design: .monospaced))
-                    .foregroundStyle(Color.white.opacity(0.42))
-            }
+            Text("Rack")
+                .font(.custom("Avenir Next Condensed", size: 26))
+                .fontWeight(.bold)
+                .foregroundStyle(.white)
 
             Spacer()
 
             RackTheme.commandButton("Add Box", fill: accentCyan.opacity(0.25), enabled: true) {
-                viewModel.addRackBox()
+                viewModel.addRackBoxAndChoosePlugin()
             }
         }
         .padding(.horizontal, 18)
@@ -394,11 +381,11 @@ private struct RackWorkspaceSection: View {
     }
 
     private var selectedInputName: String {
-        viewModel.engine.availableInputDevices.first(where: { $0.id == viewModel.engine.selectedInputDeviceID })?.name ?? "No input"
+        engine.availableInputDevices.first(where: { $0.id == engine.selectedInputDeviceID })?.name ?? "No input"
     }
 
     private var selectedOutputName: String {
-        viewModel.engine.availableOutputDevices.first(where: { $0.id == viewModel.engine.selectedOutputDeviceID })?.name ?? "No output"
+        engine.availableOutputDevices.first(where: { $0.id == engine.selectedOutputDeviceID })?.name ?? "No output"
     }
 
     private func rackFrame(in size: CGSize) -> CGRect {
@@ -430,37 +417,64 @@ private struct RackWorkspaceSection: View {
 
     private func inputPortPoint(for nodeID: UUID, canvasSize: CGSize) -> CGPoint? {
         guard let frame = moduleFrame(for: nodeID, canvasSize: canvasSize) else { return nil }
-        return CGPoint(x: frame.minX + RackTheme.portInset, y: frame.midY)
+        return CGPoint(x: frame.maxX - RackTheme.patchBayAnchorInset, y: inputPortY(for: nodeID, frame: frame))
     }
 
     private func outputPortPoint(for nodeID: UUID, canvasSize: CGSize) -> CGPoint? {
         guard let frame = moduleFrame(for: nodeID, canvasSize: canvasSize) else { return nil }
-        return CGPoint(x: frame.maxX - RackTheme.portInset, y: frame.midY)
+        return CGPoint(x: frame.maxX - RackTheme.patchBayAnchorInset, y: outputPortY(for: nodeID, frame: frame))
+    }
+
+    private func inputPortY(for nodeID: UUID, frame: CGRect) -> CGFloat {
+        if nodeID == viewModel.outputNodeID {
+            return frame.midY
+        }
+        return frame.midY - RackTheme.patchBayPortSpread
+    }
+
+    private func outputPortY(for nodeID: UUID, frame: CGRect) -> CGFloat {
+        if nodeID == viewModel.inputNodeID {
+            return frame.midY
+        }
+        return frame.midY + RackTheme.patchBayPortSpread
+    }
+
+    private func cableLaneX(for canvasSize: CGSize) -> CGFloat {
+        let rack = rackFrame(in: canvasSize)
+        return min(rack.maxX + 32, canvasSize.width - RackTheme.meterDockWidth - 16)
     }
 
     private func drawConnections(in context: inout GraphicsContext, canvasSize: CGSize) {
         for connection in viewModel.rackConnections {
             guard let start = outputPortPoint(for: connection.sourceID, canvasSize: canvasSize),
                   let end = inputPortPoint(for: connection.targetID, canvasSize: canvasSize) else { continue }
-            drawCable(from: start, to: end, color: RackTheme.cableBlue, in: &context)
+            drawCable(from: start, to: end, laneX: cableLaneX(for: canvasSize), color: RackTheme.cableBlue, in: &context)
         }
 
         if let activeCable,
            let start = activeCable.sourcePortPoint(in: canvasSize, viewModel: viewModel) {
-            drawCable(from: start, to: activeCable.currentPoint, color: RackTheme.cableAmber, in: &context)
+            drawCable(from: start, to: activeCable.currentPoint, laneX: cableLaneX(for: canvasSize), color: RackTheme.cableAmber, in: &context)
         }
     }
 
-    private func drawCable(from start: CGPoint, to end: CGPoint, color: Color, in context: inout GraphicsContext) {
-        let bend = max(52, abs(end.x - start.x) * 0.28)
+    private func drawCable(from start: CGPoint, to end: CGPoint, laneX: CGFloat, color: Color, in context: inout GraphicsContext) {
+        let outerX = max(laneX, start.x + 20, end.x + 20)
+        let startExit = CGPoint(x: outerX, y: start.y)
+        let endEntry = CGPoint(x: outerX, y: end.y)
         var path = Path()
         path.move(to: start)
         path.addCurve(
-            to: end,
-            control1: CGPoint(x: start.x + bend, y: start.y),
-            control2: CGPoint(x: end.x - bend, y: end.y)
+            to: startExit,
+            control1: CGPoint(x: start.x + 12, y: start.y),
+            control2: CGPoint(x: outerX - 18, y: start.y)
         )
-        context.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: 4, lineCap: .round))
+        path.addLine(to: endEntry)
+        path.addCurve(
+            to: end,
+            control1: CGPoint(x: outerX - 18, y: end.y),
+            control2: CGPoint(x: end.x + 12, y: end.y)
+        )
+        context.stroke(path, with: .color(color), style: StrokeStyle(lineWidth: 4, lineCap: .round, lineJoin: .round))
         context.fill(Path(ellipseIn: CGRect(x: start.x - 5, y: start.y - 5, width: 10, height: 10)), with: .color(color))
         context.fill(Path(ellipseIn: CGRect(x: end.x - 5, y: end.y - 5, width: 10, height: 10)), with: .color(color))
     }
@@ -577,18 +591,21 @@ private struct FixedNodeShell: View {
                     .font(.system(size: 13, weight: .semibold, design: .rounded))
                     .foregroundStyle(Color.white.opacity(0.65))
             }
-        }
-        .overlay(alignment: .leading) {
-            if leadingPort {
-                RackPort(label: "IN", color: accent, isHighlighted: isLeadingPortHighlighted)
-                    .offset(x: -12)
-            }
+            .padding(.trailing, RackTheme.patchBayWidth)
         }
         .overlay(alignment: .trailing) {
-            if trailingPort, let onCableChanged, let onCableEnded {
-                RackOutputPort(label: "OUT", color: accent, onCableChanged: onCableChanged, onCableEnded: onCableEnded)
-                    .offset(x: 12)
-            }
+            RackPatchBay(
+                color: accent,
+                showsInput: leadingPort,
+                showsOutput: trailingPort,
+                inputLabel: "IN",
+                outputLabel: "OUT",
+                isInputHighlighted: isLeadingPortHighlighted,
+                onCableChanged: onCableChanged,
+                onCableEnded: onCableEnded,
+                compact: true
+            )
+            .frame(width: RackTheme.patchBayWidth)
         }
     }
 }
@@ -598,6 +615,8 @@ private struct RackBoxNodeView: View {
     let accentOrange: Color
     let accentCyan: Color
     let isInputHighlighted: Bool
+    let canOpenEditor: Bool
+    let editorButtonTitle: String
     let onCableChanged: (CGPoint, CGPoint) -> Void
     let onCableEnded: (CGPoint) -> Void
     let openPluginBrowser: () -> Void
@@ -633,8 +652,10 @@ private struct RackBoxNodeView: View {
                 }
 
                 HStack(spacing: 8) {
-                    RackTheme.tinyButton(box.assignedPlugin == nil ? "Plug-In" : "Change", fill: accentCyan.opacity(0.22), enabled: true, action: openPluginBrowser)
-                    RackTheme.tinyButton("UI", fill: accentOrange.opacity(0.22), enabled: box.assignedPlugin != nil, action: openPluginEditor)
+                    if box.assignedPlugin == nil {
+                        RackTheme.tinyButton("Plug-In", fill: accentCyan.opacity(0.22), enabled: true, action: openPluginBrowser)
+                    }
+                    RackTheme.tinyButton(editorButtonTitle, fill: accentOrange.opacity(0.22), enabled: canOpenEditor, action: openPluginEditor)
                     RackTheme.tinyButton(box.isBypassed ? "Enable" : "Bypass", fill: Color.white.opacity(0.07), enabled: box.assignedPlugin != nil, action: toggleBypass)
                 }
 
@@ -644,25 +665,21 @@ private struct RackBoxNodeView: View {
                 }
 
                 Spacer(minLength: 0)
-
-                HStack {
-                    Text("IN")
-                        .font(RackTheme.labelFont)
-                        .foregroundStyle(Color.white.opacity(0.4))
-                    Spacer()
-                    Text("OUT")
-                        .font(RackTheme.labelFont)
-                        .foregroundStyle(Color.white.opacity(0.4))
-                }
             }
-        }
-        .overlay(alignment: .leading) {
-            RackPort(label: "IN", color: accent, isHighlighted: isInputHighlighted)
-                .offset(x: -12)
+            .padding(.trailing, RackTheme.patchBayWidth)
         }
         .overlay(alignment: .trailing) {
-            RackOutputPort(label: "OUT", color: accent, onCableChanged: onCableChanged, onCableEnded: onCableEnded)
-                .offset(x: 12)
+            RackPatchBay(
+                color: accent,
+                showsInput: true,
+                showsOutput: true,
+                inputLabel: "IN",
+                outputLabel: "OUT",
+                isInputHighlighted: isInputHighlighted,
+                onCableChanged: onCableChanged,
+                onCableEnded: onCableEnded
+            )
+            .frame(width: RackTheme.patchBayWidth)
         }
     }
 }
@@ -739,6 +756,71 @@ private struct RackPort: View {
                     .foregroundStyle(Color.white.opacity(0.55))
             }
         }
+    }
+}
+
+private struct RackPatchBay: View {
+    let color: Color
+    let showsInput: Bool
+    let showsOutput: Bool
+    let inputLabel: String
+    let outputLabel: String
+    var isInputHighlighted: Bool = false
+    let onCableChanged: ((CGPoint, CGPoint) -> Void)?
+    let onCableEnded: ((CGPoint) -> Void)?
+    var compact: Bool = false
+
+    var body: some View {
+        GeometryReader { proxy in
+            let width = proxy.size.width
+            let height = proxy.size.height
+            let laneX = width - RackTheme.patchBayAnchorInset
+            let inputY = compact || !showsOutput ? height * 0.5 : height * 0.36
+            let outputY = compact || !showsInput ? height * 0.5 : height * 0.70
+
+            ZStack(alignment: .topLeading) {
+                Rectangle()
+                    .fill(Color.white.opacity(0.06))
+                    .frame(width: 1, height: height - 28)
+                    .position(x: width - RackTheme.patchBayLaneInset, y: height * 0.5)
+
+                Text("PATCH")
+                    .font(RackTheme.labelFont)
+                    .foregroundStyle(Color.white.opacity(0.35))
+                    .position(x: width - (RackTheme.patchBayWidth * 0.42), y: 16)
+
+                if showsInput {
+                    RackPatchPort(label: inputLabel, color: color, isHighlighted: isInputHighlighted)
+                        .position(x: laneX, y: inputY)
+                }
+
+                if showsOutput, let onCableChanged, let onCableEnded {
+                    RackOutputPort(label: outputLabel, color: color, onCableChanged: onCableChanged, onCableEnded: onCableEnded)
+                        .position(x: laneX, y: outputY)
+                }
+            }
+        }
+        .allowsHitTesting(showsInput || showsOutput)
+    }
+}
+
+private struct RackPatchPort: View {
+    let label: String
+    let color: Color
+    var isHighlighted: Bool = false
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(label)
+                .font(RackTheme.labelFont)
+                .foregroundStyle(isHighlighted ? .white : Color.white.opacity(0.55))
+            Circle()
+                .fill(color.opacity(isHighlighted ? 1 : 0.95))
+                .frame(width: isHighlighted ? 18 : 14, height: isHighlighted ? 18 : 14)
+                .overlay(Circle().stroke(Color.white.opacity(isHighlighted ? 0.9 : 0.22), lineWidth: isHighlighted ? 2 : 1))
+                .shadow(color: isHighlighted ? color.opacity(0.75) : .clear, radius: 12)
+        }
+        .fixedSize()
     }
 }
 
@@ -944,6 +1026,7 @@ private struct PluginBrowserSheet: View {
                     .foregroundStyle(.white)
                 Spacer()
                 RackTheme.commandButton("Close", fill: Color.white.opacity(0.08), enabled: true) {
+                    viewModel.finishPluginBrowserSelection(for: target, committed: false)
                     dismiss()
                 }
             }
@@ -953,8 +1036,7 @@ private struct PluginBrowserSheet: View {
                 .foregroundStyle(Color.white.opacity(0.58))
 
             HStack(spacing: 12) {
-                TextField("Search", text: $searchQuery)
-                    .textFieldStyle(.roundedBorder)
+                RackTheme.textEntryField("Search", text: $searchQuery)
                 Picker("Format", selection: $filter) {
                     ForEach(PluginBrowserFilter.allCases) { option in
                         Text(option.rawValue).tag(option)
@@ -968,6 +1050,7 @@ private struct PluginBrowserSheet: View {
                 ForEach(viewModel.filteredPlugins(searchQuery: searchQuery, filter: filter)) { plugin in
                     Button {
                         viewModel.assignPlugin(plugin, to: target.slotID)
+                        viewModel.finishPluginBrowserSelection(for: target, committed: true)
                         dismiss()
                     } label: {
                         HStack(spacing: 12) {
@@ -1006,6 +1089,9 @@ private struct PluginBrowserSheet: View {
         .padding(22)
         .frame(minWidth: 760, minHeight: 560)
         .background(RackTheme.background)
+        .onDisappear {
+            viewModel.finishPluginBrowserSelection(for: target, committed: viewModel.boxHasAssignedPlugin(target.slotID))
+        }
     }
 }
 
@@ -1039,8 +1125,7 @@ private struct PluginSettingsSheet: View {
                     viewModel.refreshPluginCatalog()
                 }
 
-                TextField("Manual VST/VST3 path", text: $viewModel.manualPluginPathDraft)
-                    .textFieldStyle(.roundedBorder)
+                RackTheme.textEntryField("Manual VST/VST3 path", text: $viewModel.manualPluginPathDraft)
 
                 RackTheme.commandButton("Add", fill: accentOrange.opacity(0.24), enabled: true) {
                     viewModel.addManualPluginPath()
@@ -1094,8 +1179,7 @@ private struct SavePresetSheet: View {
                 .fontWeight(.bold)
                 .foregroundStyle(.white)
 
-            TextField("Preset name", text: $viewModel.savePresetName)
-                .textFieldStyle(.roundedBorder)
+            RackTheme.textEntryField("Preset name", text: $viewModel.savePresetName)
 
             HStack {
                 Spacer()
@@ -1168,7 +1252,10 @@ private enum RackTheme {
     static let canvasInset: CGFloat = 28
     static let meterDockWidth: CGFloat = 320
     static let meterDockGap: CGFloat = 24
-    static let portInset: CGFloat = 18
+    static let patchBayWidth: CGFloat = 120
+    static let patchBayAnchorInset: CGFloat = 34
+    static let patchBayLaneInset: CGFloat = 16
+    static let patchBayPortSpread: CGFloat = 18
     static let labelFont = Font.system(size: 10, weight: .black, design: .monospaced)
 
     static var background: some View {
@@ -1206,14 +1293,14 @@ private enum RackTheme {
                 HStack(spacing: 10) {
                     Text(selectionText)
                         .font(.system(size: 15, weight: .semibold, design: .rounded))
-                        .foregroundStyle(disabled ? Color.white.opacity(0.28) : .white)
+                        .foregroundStyle(disabled ? Color.white.opacity(0.5) : .white)
                         .lineLimit(1)
 
                     Spacer(minLength: 0)
 
                     Image(systemName: "chevron.up.chevron.down")
                         .font(.system(size: 11, weight: .black))
-                        .foregroundStyle(disabled ? Color.white.opacity(0.22) : Color.white.opacity(0.58))
+                        .foregroundStyle(disabled ? Color.white.opacity(0.42) : Color.white.opacity(0.58))
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 12)
@@ -1231,10 +1318,10 @@ private enum RackTheme {
         Button(title, action: action)
             .buttonStyle(.plain)
             .font(.system(size: 12, weight: .bold, design: .rounded))
-            .foregroundStyle(enabled ? Color.white : Color.white.opacity(0.3))
+            .foregroundStyle(enabled ? Color.white : Color.white.opacity(0.74))
             .padding(.horizontal, 14)
             .padding(.vertical, 9)
-            .background(Rectangle().fill(fill))
+            .background(Rectangle().fill(enabled ? fill : fill.opacity(0.72)))
             .overlay(Rectangle().stroke(Color.white.opacity(0.05), lineWidth: 1))
             .disabled(!enabled)
     }
@@ -1243,12 +1330,23 @@ private enum RackTheme {
         Button(title, action: action)
             .buttonStyle(.plain)
             .font(.system(size: 11, weight: .bold, design: .rounded))
-            .foregroundStyle(enabled ? Color.white : Color.white.opacity(0.28))
+            .foregroundStyle(enabled ? Color.white : Color.white.opacity(0.74))
             .padding(.horizontal, 10)
             .padding(.vertical, 7)
-            .background(Rectangle().fill(fill))
+            .background(Rectangle().fill(enabled ? fill : fill.opacity(0.72)))
             .overlay(Rectangle().stroke(Color.white.opacity(0.05), lineWidth: 1))
             .disabled(!enabled)
+    }
+
+    static func textEntryField(_ title: String, text: Binding<String>) -> some View {
+        TextField(title, text: text)
+            .textFieldStyle(.plain)
+            .font(.system(size: 14, weight: .semibold, design: .rounded))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(Rectangle().fill(Color.white.opacity(0.06)))
+            .overlay(Rectangle().stroke(Color.white.opacity(0.06), lineWidth: 1))
     }
 
     static func metricBox(label: String, value: String) -> some View {

@@ -1,3 +1,4 @@
+import CoreAudio
 import CoreGraphics
 import Foundation
 
@@ -48,6 +49,7 @@ final class MainViewModel: ObservableObject {
         if scanPluginsOnInit {
             refreshPluginCatalog()
         }
+        syncRackToEngine()
     }
 
     var selectedPresetChoice: PresetChoice? {
@@ -151,6 +153,42 @@ final class MainViewModel: ObservableObject {
         engine.updateIOConfiguration(sampleRate: engine.selectedSampleRate, bufferSize: engine.selectedBufferSize)
     }
 
+    func selectInputDevice(_ deviceID: AudioDeviceID) {
+        guard engine.selectedInputDeviceID != deviceID else { return }
+        engine.selectedInputDeviceID = deviceID
+        updateInputDevice()
+    }
+
+    func selectOutputDevice(_ deviceID: AudioDeviceID) {
+        guard engine.selectedOutputDeviceID != deviceID else { return }
+        engine.selectedOutputDeviceID = deviceID
+        updateOutputDevice()
+    }
+
+    func selectMonitorDevice(_ deviceID: AudioDeviceID) {
+        guard engine.selectedMonitorDeviceID != deviceID else { return }
+        engine.selectedMonitorDeviceID = deviceID
+        updateMonitorDevice()
+    }
+
+    func setMonitorEnabled(_ enabled: Bool) {
+        guard engine.monitorEnabled != enabled else { return }
+        engine.monitorEnabled = enabled
+        updateMonitorEnabled()
+    }
+
+    func updateSampleRate(_ sampleRate: SampleRateOption) {
+        guard engine.selectedSampleRate != sampleRate else { return }
+        engine.selectedSampleRate = sampleRate
+        updateIOConfiguration()
+    }
+
+    func updateBufferSize(_ bufferSize: BufferSizeOption) {
+        guard engine.selectedBufferSize != bufferSize else { return }
+        engine.selectedBufferSize = bufferSize
+        updateIOConfiguration()
+    }
+
     func selectPreset(id: String) {
         guard let choice = presetChoices.first(where: { $0.id == id }) else { return }
         selectedPresetID = id
@@ -203,7 +241,33 @@ final class MainViewModel: ObservableObject {
         }
     }
 
+    func addRackBoxAndChoosePlugin(at position: CGPoint? = nil) {
+        let newBox = RackBoxNode(
+            id: UUID(),
+            title: "Box \(rackBoxes.count + 1)",
+            assignedPlugin: nil,
+            isBypassed: false,
+            position: position ?? suggestedPosition(for: rackBoxes.count),
+            routeTarget: .output
+        )
+
+        rackBoxes.append(newBox)
+        if rackBoxes.count == 1 {
+            inputRouteTarget = .box(newBox.id)
+        }
+        if position == nil {
+            reflowRackLayout()
+        }
+        pluginBrowserTarget = PluginBrowserTarget(slotID: newBox.id, slotTitle: newBox.title, removeIfCancelled: true)
+    }
+
     func removeRackBox(_ boxID: UUID) {
+        if pluginBrowserTarget?.slotID == boxID {
+            pluginBrowserTarget = nil
+        }
+        if pluginEditorSession?.boxID == boxID {
+            pluginEditorSession = nil
+        }
         rackBoxes.removeAll { $0.id == boxID }
 
         if inputRouteTarget == .box(boxID) {
@@ -215,6 +279,7 @@ final class MainViewModel: ObservableObject {
         }
 
         reflowRackLayout()
+        syncRackToEngine()
     }
 
     func moveRackBox(_ boxID: UUID, to position: CGPoint, in canvasSize: CGSize) {
@@ -223,31 +288,101 @@ final class MainViewModel: ObservableObject {
     }
 
     func openPluginBrowser(for box: RackBoxNode) {
-        pluginBrowserTarget = PluginBrowserTarget(slotID: box.id, slotTitle: box.title)
+        guard box.assignedPlugin == nil else { return }
+        pluginBrowserTarget = PluginBrowserTarget(slotID: box.id, slotTitle: box.title, removeIfCancelled: false)
     }
 
     func assignPlugin(_ plugin: PluginDescriptor, to boxID: UUID) {
         guard let index = rackBoxes.firstIndex(where: { $0.id == boxID }) else { return }
+        if rackBoxes[index].assignedPlugin?.id == plugin.id {
+            pluginBrowserTarget = nil
+            return
+        }
         rackBoxes[index].assignedPlugin = plugin
         rackBoxes[index].isBypassed = false
         pluginBrowserTarget = nil
+        syncRackToEngine()
+    }
+
+    func finishPluginBrowserSelection(for target: PluginBrowserTarget, committed: Bool) {
+        if pluginBrowserTarget?.slotID == target.slotID {
+            pluginBrowserTarget = nil
+        }
+        guard !committed, target.removeIfCancelled else { return }
+        guard let box = rackBoxes.first(where: { $0.id == target.slotID }), box.assignedPlugin == nil else { return }
+        removeRackBox(target.slotID)
+    }
+
+    func boxHasAssignedPlugin(_ boxID: UUID) -> Bool {
+        rackBoxes.first(where: { $0.id == boxID })?.assignedPlugin != nil
+    }
+
+    func canOpenPluginEditor(for boxID: UUID) -> Bool {
+        guard let box = rackBoxes.first(where: { $0.id == boxID }),
+              let plugin = box.assignedPlugin else {
+            return false
+        }
+        if engine.liveProcessorPlugin(for: boxID) != nil {
+            return true
+        }
+        return resolvedProcessorPlugin(for: plugin) != nil
+    }
+
+    func editorButtonTitle(for boxID: UUID) -> String {
+        guard let box = rackBoxes.first(where: { $0.id == boxID }),
+              let plugin = box.assignedPlugin else {
+            return "UI"
+        }
+        if let liveProcessorPlugin = engine.liveProcessorPlugin(for: boxID) {
+            return liveProcessorPlugin.id == plugin.id ? "UI" : "AU UI"
+        }
+        if plugin.format == .audioUnit {
+            return "UI"
+        }
+        return resolvedProcessorPlugin(for: plugin) == nil ? "No UI" : "AU UI"
     }
 
     func openPluginEditor(for boxID: UUID) {
-        guard let box = rackBoxes.first(where: { $0.id == boxID }), let plugin = box.assignedPlugin else { return }
-        pluginEditorSession = PluginEditorSession(boxID: box.id, boxTitle: box.title, plugin: plugin)
+        guard let box = rackBoxes.first(where: { $0.id == boxID }),
+              let assignedPlugin = box.assignedPlugin else {
+            return
+        }
+        if let liveAudioUnit = engine.liveAudioUnit(for: boxID),
+           let editorPlugin = engine.liveProcessorPlugin(for: boxID) {
+            pluginEditorSession = PluginEditorSession(
+                boxID: box.id,
+                boxTitle: box.title,
+                assignedPlugin: assignedPlugin,
+                editorPlugin: editorPlugin,
+                liveAudioUnit: liveAudioUnit
+            )
+            return
+        }
+        guard let editorPlugin = resolvedProcessorPlugin(for: assignedPlugin) else { return }
+        pluginEditorSession = PluginEditorSession(
+            boxID: box.id,
+            boxTitle: box.title,
+            assignedPlugin: assignedPlugin,
+            editorPlugin: editorPlugin,
+            liveAudioUnit: nil
+        )
     }
 
     func clearPlugin(in boxID: UUID) {
         guard let index = rackBoxes.firstIndex(where: { $0.id == boxID }) else { return }
         rackBoxes[index].assignedPlugin = nil
         rackBoxes[index].isBypassed = false
+        if pluginEditorSession?.boxID == boxID {
+            pluginEditorSession = nil
+        }
+        syncRackToEngine()
     }
 
     func toggleBoxBypass(_ boxID: UUID) {
         guard let index = rackBoxes.firstIndex(where: { $0.id == boxID }) else { return }
         guard rackBoxes[index].assignedPlugin != nil else { return }
         rackBoxes[index].isBypassed.toggle()
+        syncRackToEngine()
     }
 
     func routeOptions(for boxID: UUID?) -> [RackRouteChoice] {
@@ -276,6 +411,7 @@ final class MainViewModel: ObservableObject {
         guard canConnect(source: .input, to: destination) else { return }
         inputRouteTarget = destination
         reflowRackLayout()
+        syncRackToEngine()
     }
 
     func setRouteTarget(_ destination: RackRouteDestination, for boxID: UUID) {
@@ -283,6 +419,7 @@ final class MainViewModel: ObservableObject {
         guard canConnect(source: .box(boxID), to: destination) else { return }
         rackBoxes[index].routeTarget = destination
         reflowRackLayout()
+        syncRackToEngine()
     }
 
     func connect(source: RackCableSource, to destination: RackRouteDestination) {
@@ -353,6 +490,31 @@ final class MainViewModel: ObservableObject {
         }
 
         reflowRackLayout()
+        syncRackToEngine()
+    }
+
+    private func syncRackToEngine() {
+        engine.updateInsertChain(activeProcessorPlugins())
+    }
+
+    private func activeProcessorPlugins() -> [InsertChainStage] {
+        let activeIDs = orderedPrimaryRouteIDs()
+        return activeIDs.compactMap { id in
+            guard let box = rackBoxes.first(where: { $0.id == id }),
+                  !box.isBypassed,
+                  let assignedPlugin = box.assignedPlugin else {
+                return nil
+            }
+            guard let processorPlugin = resolvedProcessorPlugin(for: assignedPlugin) else {
+                return nil
+            }
+            return InsertChainStage(
+                boxID: box.id,
+                boxTitle: box.title,
+                assignedPlugin: assignedPlugin,
+                processorPlugin: processorPlugin
+            )
+        }
     }
 
     private func canConnect(source: RackCableSource, to destination: RackRouteDestination) -> Bool {
@@ -420,6 +582,48 @@ final class MainViewModel: ObservableObject {
                 return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
             }
         }
+    }
+
+    private func resolvedProcessorPlugin(for plugin: PluginDescriptor) -> PluginDescriptor? {
+        if plugin.format == .audioUnit {
+            return plugin
+        }
+
+        let targetName = normalizedPluginKey(plugin.name)
+        let targetVendor = normalizedPluginKey(plugin.vendor)
+        let targetStem = plugin.bundlePath.map { normalizedPluginKey(URL(fileURLWithPath: $0).deletingPathExtension().lastPathComponent) } ?? targetName
+        let audioUnits = availablePlugins.filter { $0.format == .audioUnit }
+
+        return audioUnits
+            .compactMap { candidate -> (PluginDescriptor, Int)? in
+                let candidateName = normalizedPluginKey(candidate.name)
+                let candidateVendor = normalizedPluginKey(candidate.vendor)
+                let candidateStem = candidate.bundlePath.map { normalizedPluginKey(URL(fileURLWithPath: $0).deletingPathExtension().lastPathComponent) } ?? candidateName
+
+                var score = 0
+                if candidateName == targetName { score += 100 }
+                if candidateVendor == targetVendor, !targetVendor.isEmpty { score += 30 }
+                if candidateStem == targetStem { score += 24 }
+                if candidateName.contains(targetName) || targetName.contains(candidateName) { score += 18 }
+                if candidateStem.contains(targetStem) || targetStem.contains(candidateStem) { score += 12 }
+                if score == 0 { return nil }
+                return (candidate, score)
+            }
+            .sorted {
+                if $0.1 != $1.1 {
+                    return $0.1 > $1.1
+                }
+                return $0.0.name.localizedCaseInsensitiveCompare($1.0.name) == .orderedAscending
+            }
+            .first?
+            .0
+    }
+
+    private func normalizedPluginKey(_ value: String) -> String {
+        value
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .joined()
     }
 
     private func reflowRackLayout() {
