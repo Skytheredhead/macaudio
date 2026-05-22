@@ -2,7 +2,7 @@ name: MacAudio
 options:
   minimumXcodeGenVersion: 2.37.0
   deploymentTarget:
-    macOS: "14.0"
+    macOS: "26.0"
 settings:
   base:
     SWIFT_VERSION: 5.10
@@ -45,7 +45,7 @@ targets:
         HEADER_SEARCH_PATHS: $(inherited) $(SRCROOT)/DSP/include $(SRCROOT)/Shared/include
         OTHER_LDFLAGS: $(inherited) -framework Accelerate -framework AudioToolbox -framework AVFoundation -framework CoreAudio
         ENABLE_HARDENED_RUNTIME: YES
-        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        MACOSX_DEPLOYMENT_TARGET: "26.0"
   VirtualMicDriver:
     type: bundle
     platform: macOS
@@ -70,7 +70,7 @@ targets:
         HEADER_SEARCH_PATHS: $(inherited) $(SRCROOT)/Shared/include
         OTHER_LDFLAGS: $(inherited) -framework CoreAudio -framework CoreFoundation
         GCC_SYMBOLS_PRIVATE_EXTERN: NO
-        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        MACOSX_DEPLOYMENT_TARGET: "26.0"
   MacAudioTests:
     type: bundle.unit-test
     platform: macOS
@@ -86,7 +86,7 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         TEST_HOST: $(BUILT_PRODUCTS_DIR)/MacAudio.app/Contents/MacOS/MacAudio
         BUNDLE_LOADER: $(TEST_HOST)
-        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        MACOSX_DEPLOYMENT_TARGET: "26.0"
 schemes:
   MacAudio:
     build:

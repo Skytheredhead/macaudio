@@ -11,18 +11,22 @@
 		2354FC4C98274ABA22FA7106 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28675BAE68D8879459413F66 /* ContentView.swift */; };
 		3BB4AFCC60532523E7402291 /* RealtimeParameterStore.c in Sources */ = {isa = PBXBuildFile; fileRef = B40B3C1E07918B1287547401 /* RealtimeParameterStore.c */; };
 		4B9418234FB01F4F8F195077 /* PluginCatalogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D4503684B90905952A34E4D7 /* PluginCatalogTests.swift */; };
+		569B1B546E9B72EFB1D58C31 /* Tokens.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA61BBAE12D4B23B3EB8CA69 /* Tokens.swift */; };
 		65183B1061757A31E4007FC3 /* PluginEditorHost.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E6835C13BA2C54FF33B694D /* PluginEditorHost.swift */; };
 		66E4377379BDD1C4F68ECFC8 /* MainViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8F941FCD644F3B96C4DE5FE /* MainViewModel.swift */; };
 		6BC379D5AA3485168BD165CB /* AudioDeviceCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6CD459329D723A97F99CE8C /* AudioDeviceCatalog.swift */; };
 		6FEC68C99CE59A67E1D871A0 /* VirtualMicRingBuffer.c in Sources */ = {isa = PBXBuildFile; fileRef = BAF6D389B6DCF4D9B0FDFA1B /* VirtualMicRingBuffer.c */; };
 		791E477A00E6F8C2D01CFE4F /* RackGraphTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 006FD0214456F05D1F9E6170 /* RackGraphTests.swift */; };
+		80CD825E6C1E57493AB2854A /* Typography.swift in Sources */ = {isa = PBXBuildFile; fileRef = 91980F12A4B41D8073E7940C /* Typography.swift */; };
 		83DA0AF07F2CDB8143668ADA /* PluginCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB0BBFF410DD160CA9B6C358 /* PluginCatalog.swift */; };
+		8B9A098EF2D50BB0D8CEF04C /* Spacing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 60FFB8286B4F5A536D53B6B7 /* Spacing.swift */; };
 		8DB43DE20DB766F408B102DE /* AudioEngineController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F77E83761610A2E6C57A7CD /* AudioEngineController.swift */; };
 		9B531001B7B051115962A760 /* VirtualMicRingBuffer.c in Sources */ = {isa = PBXBuildFile; fileRef = BAF6D389B6DCF4D9B0FDFA1B /* VirtualMicRingBuffer.c */; };
 		9DC74D0EE4FDEF0123A25954 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = C071303F155CED1BE25884F8 /* Assets.xcassets */; };
 		BE6B85D7A6A22283546A2330 /* PresetStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7AB92B8ECC8CFECB0DE04D15 /* PresetStore.swift */; };
 		C11A6AC496B41395F41CD6CA /* MacAudioApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 875AA1DB05CFA642E4EACD32 /* MacAudioApp.swift */; };
 		CAFE913A433AE15D1815C876 /* VirtualMicDriver.c in Sources */ = {isa = PBXBuildFile; fileRef = 10406B201EEC1D494DE3E629 /* VirtualMicDriver.c */; };
+		DD6AAFC5D9A09261C307BB53 /* Materials.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D3DC0090D79DE858859B98A /* Materials.swift */; };
 		DE92F390E75660CFB0B06882 /* VoiceProcessingSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 542D40D2B3FEBBDBEAB81E64 /* VoiceProcessingSettings.swift */; };
 		F412A5B0CB1810D860453B6D /* RealtimeParameterStore.c in Sources */ = {isa = PBXBuildFile; fileRef = B40B3C1E07918B1287547401 /* RealtimeParameterStore.c */; };
 		F48086397AD374C2D39A3E1F /* ManualPluginPathStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDA980CD58E30DC81C71C24C /* ManualPluginPathStore.swift */; };
@@ -43,14 +47,17 @@
 		006FD0214456F05D1F9E6170 /* RackGraphTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RackGraphTests.swift; sourceTree = "<group>"; };
 		10406B201EEC1D494DE3E629 /* VirtualMicDriver.c */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.c; path = VirtualMicDriver.c; sourceTree = "<group>"; };
 		1B3FEEA028DDC9E01F402EB6 /* VirtualMicDriver.bundle */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = VirtualMicDriver.bundle; sourceTree = BUILT_PRODUCTS_DIR; };
+		1D3DC0090D79DE858859B98A /* Materials.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Materials.swift; sourceTree = "<group>"; };
 		28675BAE68D8879459413F66 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		2DA59B02134638DE1D457A5D /* VirtualMicRingBuffer.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = VirtualMicRingBuffer.h; sourceTree = "<group>"; };
 		542D40D2B3FEBBDBEAB81E64 /* VoiceProcessingSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceProcessingSettings.swift; sourceTree = "<group>"; };
 		5E6835C13BA2C54FF33B694D /* PluginEditorHost.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PluginEditorHost.swift; sourceTree = "<group>"; };
+		60FFB8286B4F5A536D53B6B7 /* Spacing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Spacing.swift; sourceTree = "<group>"; };
 		75BBC5AE554B872BD207F2A4 /* DSPChain.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = DSPChain.h; sourceTree = "<group>"; };
 		7AB92B8ECC8CFECB0DE04D15 /* PresetStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PresetStore.swift; sourceTree = "<group>"; };
 		7F77E83761610A2E6C57A7CD /* AudioEngineController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioEngineController.swift; sourceTree = "<group>"; };
 		875AA1DB05CFA642E4EACD32 /* MacAudioApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MacAudioApp.swift; sourceTree = "<group>"; };
+		91980F12A4B41D8073E7940C /* Typography.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Typography.swift; sourceTree = "<group>"; };
 		A01538671F2669D96208CA04 /* MacAudioTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MacAudioTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A99B998E3863A3441192553A /* MacAudioApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MacAudioApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B28188E226E07ADE95A7C3F8 /* RealtimeParameterStore.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = RealtimeParameterStore.h; sourceTree = "<group>"; };
@@ -63,6 +70,7 @@
 		C8F941FCD644F3B96C4DE5FE /* MainViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainViewModel.swift; sourceTree = "<group>"; };
 		D4503684B90905952A34E4D7 /* PluginCatalogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PluginCatalogTests.swift; sourceTree = "<group>"; };
 		DDA980CD58E30DC81C71C24C /* ManualPluginPathStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManualPluginPathStore.swift; sourceTree = "<group>"; };
+		FA61BBAE12D4B23B3EB8CA69 /* Tokens.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Tokens.swift; sourceTree = "<group>"; };
 		FB0BBFF410DD160CA9B6C358 /* PluginCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PluginCatalog.swift; sourceTree = "<group>"; };
 		FB56F67A0692B624FB2EAD15 /* MacAudio-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "MacAudio-Bridging-Header.h"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -77,6 +85,17 @@
 				542D40D2B3FEBBDBEAB81E64 /* VoiceProcessingSettings.swift */,
 			);
 			path = AudioEngine;
+			sourceTree = "<group>";
+		};
+		21A7BD11249769FC5DF633B3 /* DesignSystem */ = {
+			isa = PBXGroup;
+			children = (
+				1D3DC0090D79DE858859B98A /* Materials.swift */,
+				60FFB8286B4F5A536D53B6B7 /* Spacing.swift */,
+				FA61BBAE12D4B23B3EB8CA69 /* Tokens.swift */,
+				91980F12A4B41D8073E7940C /* Typography.swift */,
+			);
+			path = DesignSystem;
 			sourceTree = "<group>";
 		};
 		2AE72CD1AF856E7A0F82905F /* Tests */ = {
@@ -141,6 +160,14 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
+		B4DF41F31146180C5A8AA05E /* UI */ = {
+			isa = PBXGroup;
+			children = (
+				21A7BD11249769FC5DF633B3 /* DesignSystem */,
+			);
+			path = UI;
+			sourceTree = "<group>";
+		};
 		BEB92081FCE77C43450FAFC6 /* Sources */ = {
 			isa = PBXGroup;
 			children = (
@@ -170,6 +197,7 @@
 				5E6835C13BA2C54FF33B694D /* PluginEditorHost.swift */,
 				7AB92B8ECC8CFECB0DE04D15 /* PresetStore.swift */,
 				BA182B01CE6C2EEFAEADC7D6 /* RackGraphModels.swift */,
+				B4DF41F31146180C5A8AA05E /* UI */,
 				C1F5C28F655EB8ECC919994F /* ViewModels */,
 			);
 			path = App;
@@ -247,9 +275,10 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+				};
 			};
 			buildConfigurationList = 02C3E1DF92285933EF19736D /* Build configuration list for PBXProject "MacAudio" */;
-			compatibilityVersion = "Xcode 14.0";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
@@ -259,6 +288,7 @@
 			mainGroup = 479735FD9333E41B1D6D3240;
 			minimizedProjectReferenceProxies = 1;
 			preferredProjectObjectVersion = 77;
+			productRefGroup = 83C330AF51281F27D968A179 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
@@ -311,11 +341,15 @@
 				C11A6AC496B41395F41CD6CA /* MacAudioApp.swift in Sources */,
 				66E4377379BDD1C4F68ECFC8 /* MainViewModel.swift in Sources */,
 				F48086397AD374C2D39A3E1F /* ManualPluginPathStore.swift in Sources */,
+				DD6AAFC5D9A09261C307BB53 /* Materials.swift in Sources */,
 				83DA0AF07F2CDB8143668ADA /* PluginCatalog.swift in Sources */,
 				65183B1061757A31E4007FC3 /* PluginEditorHost.swift in Sources */,
 				BE6B85D7A6A22283546A2330 /* PresetStore.swift in Sources */,
 				20F93663959B5ECFD48E7413 /* RackGraphModels.swift in Sources */,
 				F412A5B0CB1810D860453B6D /* RealtimeParameterStore.c in Sources */,
+				8B9A098EF2D50BB0D8CEF04C /* Spacing.swift in Sources */,
+				569B1B546E9B72EFB1D58C31 /* Tokens.swift in Sources */,
+				80CD825E6C1E57493AB2854A /* Typography.swift in Sources */,
 				9B531001B7B051115962A760 /* VirtualMicRingBuffer.c in Sources */,
 				DE92F390E75660CFB0B06882 /* VoiceProcessingSettings.swift in Sources */,
 			);
@@ -345,7 +379,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACH_O_TYPE = mh_bundle;
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				OTHER_LDFLAGS = "$(inherited) -framework CoreAudio -framework CoreFoundation";
 				PRODUCT_BUNDLE_IDENTIFIER = com.skylarenns.macaudio.VirtualMicDriver;
 				PRODUCT_NAME = VirtualMic;
@@ -370,7 +404,7 @@
 					"@executable_path/../Frameworks",
 					"@loader_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.skylarenns.macaudio.tests;
 				PRODUCT_NAME = MacAudioTests;
 				SDKROOT = macosx;
@@ -395,7 +429,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				OTHER_LDFLAGS = "$(inherited) -framework Accelerate -framework AudioToolbox -framework AVFoundation -framework CoreAudio";
 				PRODUCT_BUNDLE_IDENTIFIER = com.skylarenns.macaudio;
 				PRODUCT_NAME = MacAudio;
@@ -463,7 +497,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -488,7 +522,7 @@
 					"@executable_path/../Frameworks",
 					"@loader_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.skylarenns.macaudio.tests;
 				PRODUCT_NAME = MacAudioTests;
 				SDKROOT = macosx;
@@ -513,7 +547,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				OTHER_LDFLAGS = "$(inherited) -framework Accelerate -framework AudioToolbox -framework AVFoundation -framework CoreAudio";
 				PRODUCT_BUNDLE_IDENTIFIER = com.skylarenns.macaudio;
 				PRODUCT_NAME = MacAudio;
@@ -575,7 +609,7 @@
 				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -601,7 +635,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACH_O_TYPE = mh_bundle;
-				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
 				OTHER_LDFLAGS = "$(inherited) -framework CoreAudio -framework CoreFoundation";
 				PRODUCT_BUNDLE_IDENTIFIER = com.skylarenns.macaudio.VirtualMicDriver;
 				PRODUCT_NAME = VirtualMic;

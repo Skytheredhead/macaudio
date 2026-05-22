@@ -4,6 +4,7 @@ import Foundation
 struct AudioInputDevice: Identifiable, Hashable {
     let id: AudioDeviceID
     let name: String
+    let channelCount: Int
 
     var label: String {
         "\(name) (\(id))"
@@ -13,6 +14,7 @@ struct AudioInputDevice: Identifiable, Hashable {
 struct AudioOutputDevice: Identifiable, Hashable {
     let id: AudioDeviceID
     let name: String
+    let channelCount: Int
 
     var label: String {
         "\(name) (\(id))"
@@ -30,8 +32,12 @@ enum AudioDeviceCatalog {
 
     static func listInputDevices() -> [AudioInputDevice] {
         allDeviceIDs().compactMap { id in
-            guard deviceHasInput(id) else { return nil }
-            return AudioInputDevice(id: id, name: nameForDevice(id))
+            guard deviceHasInput(id), !isMacAudioVirtualMic(id) else { return nil }
+            return AudioInputDevice(
+                id: id,
+                name: nameForDevice(id),
+                channelCount: deviceChannelCount(id, scope: kAudioObjectPropertyScopeInput)
+            )
         }
         .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
@@ -39,7 +45,11 @@ enum AudioDeviceCatalog {
     static func listOutputDevices() -> [AudioOutputDevice] {
         allDeviceIDs().compactMap { id in
             guard deviceHasOutput(id) else { return nil }
-            return AudioOutputDevice(id: id, name: nameForDevice(id))
+            return AudioOutputDevice(
+                id: id,
+                name: nameForDevice(id),
+                channelCount: deviceChannelCount(id, scope: kAudioObjectPropertyScopeOutput)
+            )
         }
         .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
@@ -124,6 +134,28 @@ enum AudioDeviceCatalog {
         var dataSize = UInt32(MemoryLayout<AudioDeviceID>.size)
         let status = AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &dataSize, &deviceID)
         return status == noErr ? deviceID : 0
+    }
+
+    static func preferredInputDeviceID() -> AudioDeviceID {
+        let defaultID = defaultInputDeviceID()
+        if defaultID != 0, deviceHasInput(defaultID), !isMacAudioVirtualMic(defaultID) {
+            return defaultID
+        }
+
+        return listInputDevices().first?.id ?? 0
+    }
+
+    static func isMacAudioVirtualMic(_ deviceID: AudioDeviceID) -> Bool {
+        deviceUID(deviceID) == "com.skylarenns.macaudio.virtualmic.device"
+            || nameForDevice(deviceID) == "Virtual Mic"
+    }
+
+    static func inputChannelCount(deviceID: AudioDeviceID) -> Int {
+        deviceChannelCount(deviceID, scope: kAudioObjectPropertyScopeInput)
+    }
+
+    static func outputChannelCount(deviceID: AudioDeviceID) -> Int {
+        deviceChannelCount(deviceID, scope: kAudioObjectPropertyScopeOutput)
     }
 
     @discardableResult
@@ -244,5 +276,21 @@ enum AudioDeviceCatalog {
             return "Input \(deviceID)"
         }
         return unmanagedName.takeUnretainedValue() as String
+    }
+
+    private static func deviceUID(_ deviceID: AudioDeviceID) -> String? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceUID,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+
+        var unmanagedUID: Unmanaged<CFString>?
+        var dataSize = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        let status = AudioObjectGetPropertyData(deviceID, &address, 0, nil, &dataSize, &unmanagedUID)
+        guard status == noErr, let unmanagedUID else {
+            return nil
+        }
+        return unmanagedUID.takeUnretainedValue() as String
     }
 }

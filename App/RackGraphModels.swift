@@ -52,3 +52,65 @@ enum RackCableSource: Hashable {
     case input
     case box(UUID)
 }
+
+enum RackLane: String, CaseIterable, Identifiable, Sendable {
+    case main
+    case left
+    case right
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .main:
+            return "Rack"
+        case .left:
+            return "Left Rack"
+        case .right:
+            return "Right Rack"
+        }
+    }
+
+    var inputTitle: String {
+        switch self {
+        case .main:
+            return "INPUT"
+        case .left:
+            return "LEFT INPUT"
+        case .right:
+            return "RIGHT INPUT"
+        }
+    }
+
+    var outputTitle: String {
+        switch self {
+        case .main:
+            return "OUTPUT"
+        case .left:
+            return "LEFT OUT"
+        case .right:
+            return "RIGHT OUT"
+        }
+    }
+}
+
+enum RackWorkspaceMode: String, CaseIterable, Identifiable {
+    case single = "Single"
+    case dualMono = "Dual Mono"
+
+    var id: String { rawValue }
+}
+
+enum AudioChannelMode: String, CaseIterable, Identifiable, Sendable {
+    case mono = "Mono"
+    case stereo = "Stereo"
+
+    var id: String { rawValue }
+}
+
+enum DualMonoEndMode: String, CaseIterable, Identifiable, Sendable {
+    case separate = "Separate"
+    case merge = "Merge"
+
+    var id: String { rawValue }
+}

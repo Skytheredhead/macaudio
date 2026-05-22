@@ -32,6 +32,7 @@ static _Atomic(uint64_t) gClockSeed = 1U;
 static _Atomic(uint64_t) gCycleCounter = 0U;
 
 static VMRingHandle* gRingReader = NULL;
+static uint32_t gEmptyReadCycles = 0U;
 
 #pragma mark Forward Declarations
 
@@ -239,6 +240,14 @@ static bool OpenRingReaderIfNeeded(void) {
         return true;
     }
     return false;
+}
+
+static void CloseRingReader(void) {
+    if (gRingReader != NULL) {
+        vm_ring_close(gRingReader);
+        gRingReader = NULL;
+    }
+    gEmptyReadCycles = 0U;
 }
 
 #pragma mark Factory
@@ -1105,6 +1114,7 @@ static OSStatus STDMETHODCALLTYPE VirtualMic_StartIO(AudioServerPlugInDriverRef 
     const uint32_t oldCount = atomic_fetch_add_explicit(&gStartedClients, 1U, memory_order_relaxed);
     if (oldCount == 0U) {
         atomic_store_explicit(&gCycleCounter, 0U, memory_order_relaxed);
+        CloseRingReader();
         NotifyDevicePropertyChanged(kAudioDevicePropertyDeviceIsRunning, kAudioObjectPropertyScopeGlobal);
     }
 
@@ -1126,6 +1136,7 @@ static OSStatus STDMETHODCALLTYPE VirtualMic_StopIO(AudioServerPlugInDriverRef i
     if (oldCount > 0U) {
         const uint32_t newCount = atomic_fetch_sub_explicit(&gStartedClients, 1U, memory_order_relaxed) - 1U;
         if (newCount == 0U) {
+            CloseRingReader();
             NotifyDevicePropertyChanged(kAudioDevicePropertyDeviceIsRunning, kAudioObjectPropertyScopeGlobal);
         }
     }
@@ -1234,6 +1245,18 @@ static OSStatus STDMETHODCALLTYPE VirtualMic_DoIOOperation(AudioServerPlugInDriv
     uint32_t readFrames = 0U;
     if (gRingReader != NULL) {
         readFrames = vm_ring_read(gRingReader, firstBuffer, inIOBufferFrameSize);
+        if (readFrames == 0U) {
+            ++gEmptyReadCycles;
+            if (gEmptyReadCycles >= 8U) {
+                CloseRingReader();
+                OpenRingReaderIfNeeded();
+                if (gRingReader != NULL) {
+                    readFrames = vm_ring_read(gRingReader, firstBuffer, inIOBufferFrameSize);
+                }
+            }
+        } else {
+            gEmptyReadCycles = 0U;
+        }
     }
 
     if (readFrames < inIOBufferFrameSize) {

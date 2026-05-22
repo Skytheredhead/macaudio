@@ -14,19 +14,46 @@ struct PluginEditorSession: Identifiable {
 }
 
 @MainActor
+final class PluginEditorWindowRegistry: ObservableObject {
+    static let shared = PluginEditorWindowRegistry()
+
+    private var sessions: [String: PluginEditorSession] = [:]
+
+    private init() {}
+
+    func register(_ session: PluginEditorSession) {
+        sessions[session.id] = session
+    }
+
+    func session(for id: String?) -> PluginEditorSession? {
+        guard let id else { return nil }
+        return sessions[id]
+    }
+
+    func close(_ id: String?) {
+        guard let id else { return }
+        sessions[id] = nil
+    }
+}
+
+@MainActor
 final class PluginEditorHost: ObservableObject {
     let session: PluginEditorSession
 
     @Published var statusMessage = "Loading plug-in editor..."
     @Published var viewController: NSViewController?
+    @Published var editorSize = CGSize(width: 720, height: 480)
 
     private var audioUnit: AVAudioUnit?
+    private var loadStarted = false
 
     init(session: PluginEditorSession) {
         self.session = session
     }
 
     func load() {
+        guard !loadStarted else { return }
+        loadStarted = true
         switch session.editorPlugin.format {
         case .audioUnit:
             loadAudioUnitEditor()
@@ -40,20 +67,14 @@ final class PluginEditorHost: ObservableObject {
         if let liveAudioUnit = session.liveAudioUnit {
             audioUnit = liveAudioUnit
             statusMessage = "Requesting editor..."
-            liveAudioUnit.auAudioUnit.requestViewController { [weak self] controller in
-                Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    if let controller {
-                        self.viewController = controller
-                        self.statusMessage = ""
-                    } else {
-                        self.statusMessage = "This Audio Unit does not expose a custom editor."
-                    }
-                }
-            }
+            requestViewController(from: liveAudioUnit, fallbackToSeparateInstance: true)
             return
         }
 
+        instantiateSeparateAudioUnitForEditor()
+    }
+
+    private func instantiateSeparateAudioUnitForEditor() {
         guard let componentDescription = session.editorPlugin.audioUnitComponentDescription else {
             statusMessage = "Could not resolve the Audio Unit component."
             return
@@ -74,19 +95,52 @@ final class PluginEditorHost: ObservableObject {
 
                 self.audioUnit = resolvedAudioUnit
                 self.statusMessage = "Requesting editor..."
-                resolvedAudioUnit.auAudioUnit.requestViewController { controller in
-                    Task { @MainActor [weak self] in
-                        guard let self else { return }
-                        if let controller {
-                            self.viewController = controller
-                            self.statusMessage = ""
-                        } else {
-                            self.statusMessage = "This Audio Unit does not expose a custom editor."
-                        }
-                    }
+                self.requestViewController(from: resolvedAudioUnit, fallbackToSeparateInstance: false)
+            }
+        }
+    }
+
+    private func requestViewController(from audioUnit: AVAudioUnit, fallbackToSeparateInstance: Bool) {
+        audioUnit.auAudioUnit.requestViewController { [weak self] controller in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if let controller {
+                    self.viewController = controller
+                    self.editorSize = Self.preferredEditorSize(for: controller)
+                    self.statusMessage = ""
+                } else if fallbackToSeparateInstance {
+                    self.statusMessage = "Opening a separate editor instance..."
+                    self.instantiateSeparateAudioUnitForEditor()
+                } else {
+                    self.statusMessage = "This Audio Unit did not return a custom editor."
                 }
             }
         }
+    }
+
+    func updateEditorSize(from controller: NSViewController) {
+        editorSize = Self.preferredEditorSize(for: controller)
+    }
+
+    private static func preferredEditorSize(for controller: NSViewController) -> CGSize {
+        let view = controller.view
+        view.layoutSubtreeIfNeeded()
+
+        let candidates = [
+            controller.preferredContentSize,
+            view.fittingSize,
+            view.intrinsicContentSize,
+            view.frame.size
+        ]
+
+        let measured = candidates.first { size in
+            size.width.isFinite && size.height.isFinite && size.width > 32 && size.height > 32
+        } ?? CGSize(width: 720, height: 480)
+
+        return CGSize(
+            width: min(max(measured.width, 360), 1440),
+            height: min(max(measured.height, 220), 1000)
+        )
     }
 }
 
@@ -95,10 +149,35 @@ private struct AudioUnitInstantiationResult: @unchecked Sendable {
     let error: Error?
 }
 
-struct PluginEditorSheet: View {
+struct PluginEditorWindow: View {
+    static let windowGroupID = "plugin-editor"
+
+    let sessionID: String?
+    @ObservedObject private var registry = PluginEditorWindowRegistry.shared
+
+    var body: some View {
+        Group {
+            if let session = registry.session(for: sessionID) {
+                PluginEditorContent(session: session)
+                    .navigationTitle(session.assignedPlugin.name)
+            } else {
+                ContentUnavailableView {
+                    Label("Editor unavailable", systemImage: "waveform.circle")
+                } description: {
+                    Text("Open a plug-in editor from a rack module.")
+                }
+                .frame(width: 420, height: 260)
+            }
+        }
+        .onDisappear {
+            registry.close(sessionID)
+        }
+    }
+}
+
+private struct PluginEditorContent: View {
     let session: PluginEditorSession
     @StateObject private var host: PluginEditorHost
-    @Environment(\.dismiss) private var dismiss
 
     init(session: PluginEditorSession) {
         self.session = session
@@ -106,76 +185,30 @@ struct PluginEditorSheet: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(session.assignedPlugin.name)
-                        .font(.system(size: 22, weight: .bold, design: .rounded))
-                        .foregroundStyle(.white)
-                    Text("\(session.boxTitle) • \(session.assignedPlugin.format.rawValue)")
-                        .font(.system(size: 12, weight: .medium, design: .rounded))
-                        .foregroundStyle(Color.white.opacity(0.64))
-                }
-
-                Spacer()
-
-                Button("Close") {
-                    dismiss()
-                }
-                .buttonStyle(.plain)
-                .font(.system(size: 12, weight: .bold, design: .rounded))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(Capsule().fill(Color.white.opacity(0.08)))
-            }
-
+        Group {
             if let viewController = host.viewController {
-                VStack(alignment: .leading, spacing: 10) {
-                    if session.assignedPlugin.id != session.editorPlugin.id {
-                        Text("Using matched Audio Unit editor for this plug-in.")
-                            .font(.system(size: 12, weight: .semibold, design: .rounded))
-                            .foregroundStyle(Color.white.opacity(0.72))
-                    }
-
-                    PluginEditorViewController(controller: viewController)
-                        .frame(minWidth: 760, minHeight: 520)
-                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                PluginEditorViewController(controller: viewController) {
+                    host.updateEditorSize(from: viewController)
                 }
-            } else {
-                VStack(alignment: .leading, spacing: 12) {
+                .frame(width: host.editorSize.width, height: host.editorSize.height)
+                .fixedSize()
+            } else if session.editorPlugin.format == .audioUnit {
+                ContentUnavailableView {
+                    Label("Loading editor", systemImage: "waveform.circle")
+                } description: {
                     Text(host.statusMessage)
-                        .font(.system(size: 14, weight: .medium, design: .rounded))
-                        .foregroundStyle(.white)
-
-                    if session.editorPlugin.format != .audioUnit {
-                        Text("Only Audio Unit editors can be opened in the current build. VST2/VST3 assignment is catalog-only until a real VST host is integrated.")
-                            .font(.system(size: 12, weight: .medium, design: .rounded))
-                            .foregroundStyle(Color.white.opacity(0.64))
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                .padding(18)
-                .background(
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .fill(Color.white.opacity(0.04))
-                )
+                .frame(width: 420, height: 260)
+            } else {
+                ContentUnavailableView {
+                    Label("VST host not available", systemImage: "puzzlepiece.extension")
+                } description: {
+                    Text("This build can scan VST2/VST3 plug-ins but does not yet host their editors. Audio Units open here directly.")
+                }
+                .frame(width: 520, height: 300)
             }
         }
-        .padding(22)
-        .frame(minWidth: 820, minHeight: 620)
-        .background(
-            LinearGradient(
-                colors: [
-                    Color(red: 0.04, green: 0.05, blue: 0.07),
-                    Color(red: 0.05, green: 0.07, blue: 0.10)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            .ignoresSafeArea()
-        )
+        .background(Color(nsColor: .windowBackgroundColor))
         .task {
             host.load()
         }
@@ -184,12 +217,20 @@ struct PluginEditorSheet: View {
 
 private struct PluginEditorViewController: NSViewControllerRepresentable {
     let controller: NSViewController
+    let sizeChanged: @MainActor () -> Void
 
     func makeNSViewController(context: Context) -> NSViewController {
-        controller
+        Task { @MainActor in
+            sizeChanged()
+        }
+        return controller
     }
 
-    func updateNSViewController(_ nsViewController: NSViewController, context: Context) {}
+    func updateNSViewController(_ nsViewController: NSViewController, context: Context) {
+        Task { @MainActor in
+            sizeChanged()
+        }
+    }
 }
 
 private extension PluginDescriptor {

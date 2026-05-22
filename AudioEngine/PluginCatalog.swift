@@ -72,9 +72,10 @@ struct RackInsertSlot: Identifiable, Equatable, Codable, Sendable {
 struct PluginBrowserTarget: Identifiable, Equatable, Sendable {
     let slotID: UUID
     let slotTitle: String
+    var lane: RackLane = .main
     let removeIfCancelled: Bool
 
-    var id: UUID { slotID }
+    var id: String { "\(lane.rawValue):\(slotID.uuidString)" }
 }
 
 enum PluginBrowserFilter: String, CaseIterable, Identifiable, Sendable {

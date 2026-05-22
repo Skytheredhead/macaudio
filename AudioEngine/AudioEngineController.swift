@@ -8,6 +8,7 @@ import QuartzCore
 final class AudioEngineController: ObservableObject, @unchecked Sendable {
     private static let noInputFramesWarning = "No input frames from the selected microphone."
     private static let recoveringInputWarning = "Recovering microphone input..."
+    private static let liveInsertWarningPrefix = "Some plug-ins could not be loaded into the live chain: "
 
     @Published var isRunning = false
     @Published var availableInputDevices: [AudioInputDevice] = []
@@ -15,6 +16,10 @@ final class AudioEngineController: ObservableObject, @unchecked Sendable {
     @Published var selectedInputDeviceID: AudioDeviceID = 0
     @Published var selectedOutputDeviceID: AudioDeviceID = 0
     @Published var selectedMonitorDeviceID: AudioDeviceID = 0
+    @Published var selectedInputChannelMode: AudioChannelMode = .mono
+    @Published var selectedOutputChannelMode: AudioChannelMode = .stereo
+    @Published var rackWorkspaceMode: RackWorkspaceMode = .single
+    @Published var dualMonoEndMode: DualMonoEndMode = .separate
     @Published var selectedSampleRate: SampleRateOption = .auto
     @Published var selectedBufferSize: BufferSizeOption = .auto
 
@@ -38,15 +43,18 @@ final class AudioEngineController: ObservableObject, @unchecked Sendable {
     @Published private(set) var transportState: AudioTransportState = .stopped
 
     private let maxFramesPerBuffer = 2048
+    private let virtualMicRingName = "/macaudio-vm"
     private let routeRingName = "/macaudio-out"
     private let monitorRingName = "/macaudio-mon"
     private let hardwareObserverQueue = DispatchQueue(label: "com.skylarenns.macaudio.hardware", qos: .utility)
     private let controlQueue = DispatchQueue(label: "com.skylarenns.macaudio.control", qos: .userInitiated)
     private let controlQueueKey = DispatchSpecificKey<UInt8>()
     private let restartLock = NSLock()
+    private let insertChainLock = NSLock()
     private let realtimeSnapshotLock = NSLock()
 
     private var dspChain: OpaquePointer?
+    private var dspRightChain: OpaquePointer?
     private var inputUnit: AudioUnit?
     private var routeOutputUnit: AudioUnit?
     private var monitorOutputUnit: AudioUnit?
@@ -55,12 +63,14 @@ final class AudioEngineController: ObservableObject, @unchecked Sendable {
     private var routeReader: OpaquePointer?
     private var monitorWriter: OpaquePointer?
     private var monitorReader: OpaquePointer?
+    private var virtualMicWriter: OpaquePointer?
 
     private var processScratch: UnsafeMutablePointer<Float>
     private var routeScratch: UnsafeMutablePointer<Float>
     private var monitorScratch: UnsafeMutablePointer<Float>
     private var stereoLeftScratch: UnsafeMutablePointer<Float>
     private var stereoRightScratch: UnsafeMutablePointer<Float>
+    private var virtualMicScratch: UnsafeMutablePointer<Float>
     private var insertInputLeftScratch: UnsafeMutablePointer<Float>
     private var insertInputRightScratch: UnsafeMutablePointer<Float>
     private var interleavedStereoScratch: UnsafeMutablePointer<Float>
@@ -75,12 +85,23 @@ final class AudioEngineController: ObservableObject, @unchecked Sendable {
     private var currentSettings = VoicePreset.cleanVoice.settings
     private var xrunAutoFallbackTriggered = false
     private var inputRecoveryAttempts = 0
-    private var pendingInsertPlugins: [InsertChainStage] = []
+    private var pendingMainInsertPlugins: [InsertChainStage] = []
+    private var pendingLeftInsertPlugins: [InsertChainStage] = []
+    private var pendingRightInsertPlugins: [InsertChainStage] = []
     private var pendingInsertSignature: [String] = []
     private var activeInsertSignature: [String] = []
-    private var activeInsertChain: HostedAudioUnitInsertChain?
+    private var activeMainInsertChain: HostedAudioUnitInsertChain?
+    private var activeLeftInsertChain: HostedAudioUnitInsertChain?
+    private var activeRightInsertChain: HostedAudioUnitInsertChain?
+    private var liveInsertLoadFailures: [String: String] = [:]
     private var pluginRenderSampleTime: Double = 0
     private var latestRealtimeSnapshot = RealtimeMeterSnapshot()
+    private var activeInputChannelCount = 1
+    private var activeOutputChannelMode: AudioChannelMode = .stereo
+    private var activeRackWorkspaceMode: RackWorkspaceMode = .single
+    private var activeDualMonoEndMode: DualMonoEndMode = .separate
+    private var activeSampleRate: Double = 48_000
+    private var activeBufferFrames: UInt32 = 128
 
     private var routeOutputContext: OutputRenderContext?
     private var monitorOutputContext: OutputRenderContext?
@@ -92,6 +113,7 @@ final class AudioEngineController: ObservableObject, @unchecked Sendable {
         monitorScratch = .allocate(capacity: maxFramesPerBuffer * 2)
         stereoLeftScratch = .allocate(capacity: maxFramesPerBuffer)
         stereoRightScratch = .allocate(capacity: maxFramesPerBuffer)
+        virtualMicScratch = .allocate(capacity: maxFramesPerBuffer)
         insertInputLeftScratch = .allocate(capacity: maxFramesPerBuffer)
         insertInputRightScratch = .allocate(capacity: maxFramesPerBuffer)
         interleavedStereoScratch = .allocate(capacity: maxFramesPerBuffer * 2)
@@ -108,6 +130,7 @@ final class AudioEngineController: ObservableObject, @unchecked Sendable {
         monitorScratch.deallocate()
         stereoLeftScratch.deallocate()
         stereoRightScratch.deallocate()
+        virtualMicScratch.deallocate()
         insertInputLeftScratch.deallocate()
         insertInputRightScratch.deallocate()
         interleavedStereoScratch.deallocate()
@@ -152,7 +175,7 @@ final class AudioEngineController: ObservableObject, @unchecked Sendable {
         availableInputDevices = AudioDeviceCatalog.listInputDevices()
         availableOutputDevices = AudioDeviceCatalog.listOutputDevices()
 
-        let inputFallback = AudioDeviceCatalog.defaultInputDeviceID()
+        let inputFallback = AudioDeviceCatalog.preferredInputDeviceID()
         if selectedInputDeviceID == 0 || !availableInputDevices.contains(where: { $0.id == selectedInputDeviceID }) {
             selectedInputDeviceID = inputFallback
         }
@@ -180,22 +203,35 @@ final class AudioEngineController: ObservableObject, @unchecked Sendable {
     }
 
     func updateInsertChain(_ plugins: [InsertChainStage]) {
-        pendingInsertPlugins = plugins
-        pendingInsertSignature = insertSignature(for: plugins)
-        guard isRunning else { return }
-        guard pendingInsertSignature != activeInsertSignature else { return }
+        updateInsertChains(main: plugins, left: [], right: [])
+    }
+
+    func updateInsertChains(main: [InsertChainStage], left: [InsertChainStage], right: [InsertChainStage]) {
+        let signature = combinedInsertSignature(main: main, left: left, right: right)
+        withInsertChainLock {
+            pendingMainInsertPlugins = main
+            pendingLeftInsertPlugins = left
+            pendingRightInsertPlugins = right
+            pendingInsertSignature = signature
+        }
+        guard isRunning || transportState == .starting else { return }
+        guard signature != currentActiveInsertSignature() else { return }
         restartForConfigurationChange(message: "Updating insert chain...")
     }
 
     func liveAudioUnit(for boxID: UUID) -> AVAudioUnit? {
-        controlQueueSync {
-            activeInsertChain?.liveAudioUnit(for: boxID)
+        withInsertChainLock {
+            activeMainInsertChain?.liveAudioUnit(for: boxID)
+                ?? activeLeftInsertChain?.liveAudioUnit(for: boxID)
+                ?? activeRightInsertChain?.liveAudioUnit(for: boxID)
         }
     }
 
     func liveProcessorPlugin(for boxID: UUID) -> PluginDescriptor? {
-        controlQueueSync {
-            activeInsertChain?.processorPlugin(for: boxID)
+        withInsertChainLock {
+            activeMainInsertChain?.processorPlugin(for: boxID)
+                ?? activeLeftInsertChain?.processorPlugin(for: boxID)
+                ?? activeRightInsertChain?.processorPlugin(for: boxID)
         }
     }
 
@@ -222,7 +258,7 @@ final class AudioEngineController: ObservableObject, @unchecked Sendable {
         }
     }
 
-    private func stopSynchronously() {
+    private func stopSynchronously(publishStopped: Bool = true) {
         meterTimer?.cancel()
         meterTimer = nil
 
@@ -237,8 +273,14 @@ final class AudioEngineController: ObservableObject, @unchecked Sendable {
             dsp_chain_destroy(chain)
             dspChain = nil
         }
+        if let chain = dspRightChain {
+            dsp_chain_destroy(chain)
+            dspRightChain = nil
+        }
         releaseInsertChain()
-        activeInsertSignature = []
+        withInsertChainLock {
+            activeInsertSignature = []
+        }
         withRealtimeSnapshotLock {
             latestRealtimeSnapshot = RealtimeMeterSnapshot()
         }
@@ -247,10 +289,11 @@ final class AudioEngineController: ObservableObject, @unchecked Sendable {
         closeRing(&routeReader)
         closeRing(&monitorWriter)
         closeRing(&monitorReader)
+        closeRing(&virtualMicWriter)
 
         publish {
             self.isRunning = false
-            self.transportState = .stopped
+            self.transportState = publishStopped ? .stopped : .starting
         }
     }
 
@@ -266,53 +309,92 @@ final class AudioEngineController: ObservableObject, @unchecked Sendable {
     func updateOutputDevice(_ deviceID: AudioDeviceID) {
         selectedOutputDeviceID = deviceID
         routeStatus = selectedOutputDeviceID == 0 ? "No output" : AudioDeviceCatalog.deviceName(selectedOutputDeviceID)
-        guard isRunning else { return }
+        guard isRunning || transportState == .starting else { return }
         restartForConfigurationChange(message: "Switching route output...")
     }
 
     func updateMonitorDevice(_ deviceID: AudioDeviceID) {
         selectedMonitorDeviceID = deviceID
         guard isRunning, monitorEnabled else { return }
-        restartForConfigurationChange(message: "Switching monitor output...")
+        restartMonitorOutput(message: "Switching monitor output...")
     }
 
     func updateInputDevice(_ deviceID: AudioDeviceID) {
-        selectedInputDeviceID = deviceID
-        guard isRunning else { return }
+        if AudioDeviceCatalog.isMacAudioVirtualMic(deviceID) {
+            selectedInputDeviceID = AudioDeviceCatalog.preferredInputDeviceID()
+            warningMessage = "Choose a hardware microphone as input. Virtual Mic is the processed output for Discord."
+        } else {
+            selectedInputDeviceID = deviceID
+        }
+        guard isRunning || transportState == .starting else { return }
         restartForConfigurationChange(message: "Switching microphone...")
     }
 
     func updateIOConfiguration(sampleRate: SampleRateOption, bufferSize: BufferSizeOption) {
         selectedSampleRate = sampleRate
         selectedBufferSize = bufferSize
-        guard isRunning else { return }
+        guard isRunning || transportState == .starting else { return }
         restartForConfigurationChange(message: "Applying audio settings...")
+    }
+
+    func updateInputChannelMode(_ mode: AudioChannelMode) {
+        selectedInputChannelMode = mode
+        guard isRunning || transportState == .starting else { return }
+        restartForConfigurationChange(message: "Switching input channel mode...")
+    }
+
+    func updateOutputChannelMode(_ mode: AudioChannelMode) {
+        selectedOutputChannelMode = mode
+        guard isRunning || transportState == .starting else { return }
+        restartForConfigurationChange(message: "Switching output channel mode...")
+    }
+
+    func updateRackWorkspaceMode(_ mode: RackWorkspaceMode) {
+        rackWorkspaceMode = mode
+        guard isRunning || transportState == .starting else { return }
+        restartForConfigurationChange(message: "Switching rack mode...")
+    }
+
+    func updateDualMonoEndMode(_ mode: DualMonoEndMode) {
+        dualMonoEndMode = mode
+        guard isRunning || transportState == .starting else { return }
+        restartForConfigurationChange(message: "Switching dual mono output...")
     }
 
     func setMonitorEnabled(_ enabled: Bool) {
         monitorEnabled = enabled
         guard isRunning else { return }
-        restartForConfigurationChange(message: enabled ? "Enabling monitor..." : "Disabling monitor...")
+        if enabled {
+            restartMonitorOutput(message: "Enabling monitor...")
+        } else {
+            stopMonitorOutput(message: nil)
+        }
     }
 
     private func startEngine(resetInputRecovery: Bool) {
+        guard inputUnit == nil, routeOutputUnit == nil, dspChain == nil else {
+            publish {
+                self.isRunning = true
+                self.transportState = .running
+            }
+            return
+        }
+
         let startingState = syncOnMain {
             self.refreshInputDevices()
             return (
-                isRunning: self.isRunning,
                 selectedInput: self.selectedInputDeviceID,
                 selectedOutput: self.selectedOutputDeviceID,
                 selectedMonitor: self.selectedMonitorDeviceID,
+                inputChannelMode: self.selectedInputChannelMode,
+                outputChannelMode: self.selectedOutputChannelMode,
+                rackWorkspaceMode: self.rackWorkspaceMode,
+                dualMonoEndMode: self.dualMonoEndMode,
                 monitorEnabled: self.monitorEnabled,
                 sampleRate: self.selectedSampleRate,
                 bufferSize: self.selectedBufferSize,
                 latencyQuality: self.latencyQuality
             )
-        }
-
-        guard !startingState.isRunning else {
-            publish { self.transportState = .running }
-            return
         }
 
         publish { self.warningMessage = nil }
@@ -324,7 +406,7 @@ final class AudioEngineController: ObservableObject, @unchecked Sendable {
             latestRealtimeSnapshot = RealtimeMeterSnapshot()
         }
 
-        let inputDeviceID = startingState.selectedInput == 0 ? AudioDeviceCatalog.defaultInputDeviceID() : startingState.selectedInput
+        let inputDeviceID = startingState.selectedInput == 0 ? AudioDeviceCatalog.preferredInputDeviceID() : startingState.selectedInput
         let outputDeviceID = startingState.selectedOutput == 0 ? AudioDeviceCatalog.preferredOutputDeviceID() : startingState.selectedOutput
         guard inputDeviceID != 0, outputDeviceID != 0 else {
             publish {
@@ -334,12 +416,24 @@ final class AudioEngineController: ObservableObject, @unchecked Sendable {
             return
         }
 
+        let requestedInputChannels = startingState.inputChannelMode == .stereo || startingState.rackWorkspaceMode == .dualMono ? 2 : 1
+        let availableInputChannels = max(1, AudioDeviceCatalog.inputChannelCount(deviceID: inputDeviceID))
+        activeInputChannelCount = min(requestedInputChannels, availableInputChannels)
+        activeOutputChannelMode = startingState.outputChannelMode
+        activeRackWorkspaceMode = startingState.rackWorkspaceMode
+        activeDualMonoEndMode = startingState.dualMonoEndMode
+        if requestedInputChannels > activeInputChannelCount {
+            publish { self.warningMessage = "Selected input is mono. Using the same signal for both dual mono racks." }
+        }
+
         let bufferFrames = effectiveBufferFrames(sampleRateOption: startingState.sampleRate, bufferSizeOption: startingState.bufferSize, latencyQuality: startingState.latencyQuality)
         let sampleRate = resolveSampleRate(
             inputDeviceID: inputDeviceID,
             outputDeviceID: outputDeviceID,
             requestedRate: startingState.sampleRate
         )
+        activeSampleRate = sampleRate
+        activeBufferFrames = bufferFrames
         configureDeviceIO(deviceID: inputDeviceID, sampleRate: sampleRate, frameSize: bufferFrames)
         configureDeviceIO(deviceID: outputDeviceID, sampleRate: sampleRate, frameSize: bufferFrames)
         if startingState.monitorEnabled, startingState.selectedMonitor != 0 {
@@ -349,13 +443,16 @@ final class AudioEngineController: ObservableObject, @unchecked Sendable {
         setupRingBuffers(sampleRate: sampleRate)
 
         dspChain = dsp_chain_create(sampleRate, 1)
+        dspRightChain = dsp_chain_create(sampleRate, 1)
         pushParametersToDSP()
         do {
             try buildInsertChain(sampleRate: sampleRate)
         } catch {
             publish { self.warningMessage = error.localizedDescription }
             releaseInsertChain()
-            activeInsertSignature = []
+            withInsertChainLock {
+                activeInsertSignature = []
+            }
         }
         pluginRenderSampleTime = 0
 
@@ -388,8 +485,8 @@ final class AudioEngineController: ObservableObject, @unchecked Sendable {
         if let explicit = requestedRate.sampleRate {
             return explicit
         }
-        return AudioDeviceCatalog.nominalSampleRate(deviceID: outputDeviceID)
-            ?? AudioDeviceCatalog.nominalSampleRate(deviceID: inputDeviceID)
+        return AudioDeviceCatalog.nominalSampleRate(deviceID: inputDeviceID)
+            ?? AudioDeviceCatalog.nominalSampleRate(deviceID: outputDeviceID)
             ?? 48_000
     }
 
@@ -399,13 +496,24 @@ final class AudioEngineController: ObservableObject, @unchecked Sendable {
     }
 
     private func setupRingBuffers(sampleRate: Double) {
+        _ = virtualMicRingName.withCString { vm_ring_unlink($0) }
         _ = routeRingName.withCString { vm_ring_unlink($0) }
         _ = monitorRingName.withCString { vm_ring_unlink($0) }
 
+        closeRing(&virtualMicWriter)
         closeRing(&routeWriter)
         closeRing(&routeReader)
         closeRing(&monitorWriter)
         closeRing(&monitorReader)
+
+        var virtualMicWriter: OpaquePointer?
+        let virtualMicWriterResult = virtualMicRingName.withCString { vm_ring_create_writer($0, 8192, 1, &virtualMicWriter) }
+        guard virtualMicWriterResult == 0, let virtualMicWriter else {
+            publish { self.warningMessage = "Virtual Mic buffer failed (\(virtualMicWriterResult))." }
+            return
+        }
+        vm_ring_set_sample_rate(virtualMicWriter, UInt32(sampleRate))
+        self.virtualMicWriter = virtualMicWriter
 
         var routeWriter: OpaquePointer?
         let routeWriterResult = routeRingName.withCString { vm_ring_create_writer($0, 8192, 2, &routeWriter) }
@@ -444,16 +552,38 @@ final class AudioEngineController: ObservableObject, @unchecked Sendable {
             dsp_chain_process_mono(chain, processScratch, UInt32(frameCount))
         }
 
-        for frame in 0..<frameCount {
-            let sample = processScratch[frame]
-            stereoLeftScratch[frame] = sample
-            stereoRightScratch[frame] = sample
+        if activeInputChannelCount > 1 {
+            if let chain = dspRightChain {
+                dsp_chain_process_mono(chain, stereoRightScratch, UInt32(frameCount))
+            }
+            memcpy(stereoLeftScratch, processScratch, frameCount * MemoryLayout<Float>.size)
+        } else {
+            for frame in 0..<frameCount {
+                let sample = processScratch[frame]
+                stereoLeftScratch[frame] = sample
+                stereoRightScratch[frame] = sample
+            }
         }
 
-        processInsertChain(frameCount: UInt32(frameCount))
+        switch activeRackWorkspaceMode {
+        case .single:
+            processInsertChain(frameCount: UInt32(frameCount))
+        case .dualMono:
+            processDualMonoInsertChains(frameCount: UInt32(frameCount))
+            if activeDualMonoEndMode == .merge {
+                mergeStereoToDualMono(frameCount: frameCount)
+            }
+        }
+        if activeOutputChannelMode == .mono {
+            mergeStereoToDualMono(frameCount: frameCount)
+        }
         interleaveStereo(frameCount: frameCount)
+        mixVirtualMicMono(frameCount: frameCount)
         updateRealtimeSnapshot(frameCount: frameCount)
 
+        if let virtualMicWriter {
+            _ = vm_ring_write(virtualMicWriter, virtualMicScratch, UInt32(frameCount))
+        }
         if let routeWriter {
             _ = vm_ring_write(routeWriter, interleavedStereoScratch, UInt32(frameCount))
         }
@@ -501,7 +631,7 @@ final class AudioEngineController: ObservableObject, @unchecked Sendable {
             mBytesPerPacket: 4,
             mFramesPerPacket: 1,
             mBytesPerFrame: 4,
-            mChannelsPerFrame: 1,
+            mChannelsPerFrame: UInt32(activeInputChannelCount),
             mBitsPerChannel: 32,
             mReserved: 0
         )
@@ -629,7 +759,7 @@ final class AudioEngineController: ObservableObject, @unchecked Sendable {
             self.inputUnit = nil
         }
         if let inputBufferListPointer {
-            inputBufferListPointer.deallocate()
+            UnsafeMutableRawPointer(inputBufferListPointer).deallocate()
             self.inputBufferListPointer = nil
         }
     }
@@ -643,16 +773,27 @@ final class AudioEngineController: ObservableObject, @unchecked Sendable {
     }
 
     private func allocateInputBufferList() {
-        inputBufferListPointer?.deallocate()
-        let pointer = UnsafeMutablePointer<AudioBufferList>.allocate(capacity: 1)
-        pointer.initialize(to: AudioBufferList(
-            mNumberBuffers: 1,
-            mBuffers: AudioBuffer(
+        if let inputBufferListPointer {
+            UnsafeMutableRawPointer(inputBufferListPointer).deallocate()
+            self.inputBufferListPointer = nil
+        }
+        let channelCount = max(1, min(activeInputChannelCount, 2))
+        let byteCount = MemoryLayout<AudioBufferList>.size + max(0, channelCount - 1) * MemoryLayout<AudioBuffer>.stride
+        let rawPointer = UnsafeMutableRawPointer.allocate(
+            byteCount: byteCount,
+            alignment: MemoryLayout<AudioBufferList>.alignment
+        )
+        rawPointer.initializeMemory(as: UInt8.self, repeating: 0, count: byteCount)
+        let pointer = rawPointer.bindMemory(to: AudioBufferList.self, capacity: 1)
+        let buffers = UnsafeMutableAudioBufferListPointer(pointer)
+        pointer.pointee.mNumberBuffers = UInt32(channelCount)
+        for index in 0..<channelCount {
+            buffers[index] = AudioBuffer(
                 mNumberChannels: 1,
                 mDataByteSize: UInt32(maxFramesPerBuffer * MemoryLayout<Float>.size),
-                mData: processScratch
+                mData: index == 0 ? UnsafeMutableRawPointer(processScratch) : UnsafeMutableRawPointer(stereoRightScratch)
             )
-        ))
+        }
         inputBufferListPointer = pointer
     }
 
@@ -673,6 +814,10 @@ final class AudioEngineController: ObservableObject, @unchecked Sendable {
         let buffers = UnsafeMutableAudioBufferListPointer(inputBufferListPointer)
         buffers[0].mData = UnsafeMutableRawPointer(processScratch)
         buffers[0].mDataByteSize = frameCount * UInt32(MemoryLayout<Float>.size)
+        if buffers.count > 1 {
+            buffers[1].mData = UnsafeMutableRawPointer(stereoRightScratch)
+            buffers[1].mDataByteSize = frameCount * UInt32(MemoryLayout<Float>.size)
+        }
 
         let status = AudioUnitRender(inputUnit, ioActionFlags, timeStamp, 1, frameCount, inputBufferListPointer)
         guard status == noErr else { return status }
@@ -768,52 +913,76 @@ final class AudioEngineController: ObservableObject, @unchecked Sendable {
         params.gateAttackMs = currentSettings.gateAttackMs
         params.gateReleaseMs = currentSettings.gateReleaseMs
         dsp_chain_set_parameters(chain, params)
+        if let rightChain = dspRightChain {
+            dsp_chain_set_parameters(rightChain, params)
+        }
     }
 
     private func buildInsertChain(sampleRate: Double) throws {
         releaseInsertChain()
-        guard !pendingInsertPlugins.isEmpty else {
-            activeInsertSignature = []
+        let pending = pendingInsertChainSnapshot()
+        guard !pending.main.isEmpty || !pending.left.isEmpty || !pending.right.isEmpty else {
+            withInsertChainLock {
+                activeInsertSignature = []
+            }
+            liveInsertLoadFailures.removeAll()
+            publishLiveInsertWarningIfNeeded()
             return
         }
 
-        var insertStages: [InsertChainStage] = []
-        var failedPluginNames: [String] = []
+        liveInsertLoadFailures.removeAll()
+        let mainInsertChain = try buildInsertChain(for: pending.main, sampleRate: sampleRate)
+        let leftInsertChain = try buildInsertChain(for: pending.left, sampleRate: sampleRate)
+        let rightInsertChain = try buildInsertChain(for: pending.right, sampleRate: sampleRate)
+        withInsertChainLock {
+            activeMainInsertChain = mainInsertChain
+            activeLeftInsertChain = leftInsertChain
+            activeRightInsertChain = rightInsertChain
+            activeInsertSignature = pending.signature
+        }
+        publishLiveInsertWarningIfNeeded()
+    }
 
-        for stage in pendingInsertPlugins {
+    private func buildInsertChain(for pendingPlugins: [InsertChainStage], sampleRate: Double) throws -> HostedAudioUnitInsertChain? {
+        guard !pendingPlugins.isEmpty else { return nil }
+
+        var insertStages: [InsertChainStage] = []
+        for stage in pendingPlugins {
             if stage.processorPlugin.audioUnitComponentDescription != nil {
                 insertStages.append(stage)
             } else {
-                failedPluginNames.append(stage.assignedPlugin.name)
+                liveInsertLoadFailures[stage.processorPlugin.id] = "No loadable Audio Unit component was found."
             }
         }
 
         if !insertStages.isEmpty {
-            activeInsertChain = try HostedAudioUnitInsertChain(
+            let insertChain = try HostedAudioUnitInsertChain(
                 stages: insertStages,
                 sampleRate: sampleRate,
                 maximumFrames: UInt32(maxFramesPerBuffer)
             )
-            activeInsertSignature = pendingInsertSignature
+            liveInsertLoadFailures.merge(insertChain.failedPluginMessages) { _, new in new }
+            return insertChain.isEmpty ? nil : insertChain
         } else {
-            activeInsertChain = nil
-            activeInsertSignature = []
-        }
-        if !failedPluginNames.isEmpty {
-            let failedList = failedPluginNames.joined(separator: ", ")
-            publish {
-                self.warningMessage = "Some plug-ins could not be loaded into the live chain: \(failedList)"
-            }
+            return nil
         }
     }
 
     private func releaseInsertChain() {
-        activeInsertChain?.teardown()
-        activeInsertChain = nil
+        withInsertChainLock {
+            activeMainInsertChain?.teardown()
+            activeLeftInsertChain?.teardown()
+            activeRightInsertChain?.teardown()
+            activeMainInsertChain = nil
+            activeLeftInsertChain = nil
+            activeRightInsertChain = nil
+        }
     }
 
     private func processInsertChain(frameCount: UInt32) {
-        guard let activeInsertChain else { return }
+        insertChainLock.lock()
+        defer { insertChainLock.unlock() }
+        guard let activeInsertChain = activeMainInsertChain else { return }
 
         memcpy(insertInputLeftScratch, stereoLeftScratch, Int(frameCount) * MemoryLayout<Float>.size)
         memcpy(insertInputRightScratch, stereoRightScratch, Int(frameCount) * MemoryLayout<Float>.size)
@@ -833,11 +1002,81 @@ final class AudioEngineController: ObservableObject, @unchecked Sendable {
         pluginRenderSampleTime += Double(frameCount)
     }
 
+    private func processDualMonoInsertChains(frameCount: UInt32) {
+        insertChainLock.lock()
+        defer { insertChainLock.unlock() }
+        if let activeLeftInsertChain {
+            memcpy(insertInputLeftScratch, stereoLeftScratch, Int(frameCount) * MemoryLayout<Float>.size)
+            memcpy(insertInputRightScratch, stereoLeftScratch, Int(frameCount) * MemoryLayout<Float>.size)
+            let status = activeLeftInsertChain.process(
+                frameCount: frameCount,
+                sampleTime: pluginRenderSampleTime,
+                inputLeft: insertInputLeftScratch,
+                inputRight: insertInputRightScratch,
+                outputLeft: stereoLeftScratch,
+                outputRight: insertInputRightScratch
+            )
+            if status == noErr {
+                averageMonoPair(left: stereoLeftScratch, right: insertInputRightScratch, output: stereoLeftScratch, frameCount: Int(frameCount))
+            } else {
+                memcpy(stereoLeftScratch, insertInputLeftScratch, Int(frameCount) * MemoryLayout<Float>.size)
+            }
+        }
+
+        if let activeRightInsertChain {
+            memcpy(insertInputLeftScratch, stereoRightScratch, Int(frameCount) * MemoryLayout<Float>.size)
+            memcpy(insertInputRightScratch, stereoRightScratch, Int(frameCount) * MemoryLayout<Float>.size)
+            let status = activeRightInsertChain.process(
+                frameCount: frameCount,
+                sampleTime: pluginRenderSampleTime,
+                inputLeft: insertInputLeftScratch,
+                inputRight: insertInputRightScratch,
+                outputLeft: insertInputLeftScratch,
+                outputRight: stereoRightScratch
+            )
+            if status == noErr {
+                averageMonoPair(left: insertInputLeftScratch, right: stereoRightScratch, output: stereoRightScratch, frameCount: Int(frameCount))
+            } else {
+                memcpy(stereoRightScratch, insertInputRightScratch, Int(frameCount) * MemoryLayout<Float>.size)
+            }
+        }
+
+        pluginRenderSampleTime += Double(frameCount)
+    }
+
+    private func mergeStereoToDualMono(frameCount: Int) {
+        guard frameCount > 0 else { return }
+        for frame in 0..<frameCount {
+            let sample = (stereoLeftScratch[frame] + stereoRightScratch[frame]) * 0.5
+            stereoLeftScratch[frame] = sample
+            stereoRightScratch[frame] = sample
+        }
+    }
+
+    private func averageMonoPair(
+        left: UnsafeMutablePointer<Float>,
+        right: UnsafeMutablePointer<Float>,
+        output: UnsafeMutablePointer<Float>,
+        frameCount: Int
+    ) {
+        guard frameCount > 0 else { return }
+        for frame in 0..<frameCount {
+            output[frame] = (left[frame] + right[frame]) * 0.5
+        }
+    }
+
     private func interleaveStereo(frameCount: Int) {
         guard frameCount > 0 else { return }
         for frame in 0..<frameCount {
             interleavedStereoScratch[(frame * 2)] = stereoLeftScratch[frame]
             interleavedStereoScratch[(frame * 2) + 1] = stereoRightScratch[frame]
+        }
+    }
+
+    private func mixVirtualMicMono(frameCount: Int) {
+        guard frameCount > 0 else { return }
+        for frame in 0..<frameCount {
+            virtualMicScratch[frame] = (stereoLeftScratch[frame] + stereoRightScratch[frame]) * 0.5
         }
     }
 
@@ -911,13 +1150,14 @@ final class AudioEngineController: ObservableObject, @unchecked Sendable {
     private func restartForConfigurationChange(message: String? = nil) {
         suppressInputWatchdog(for: 3.0)
         warningMessage = message
-        let wasRunning = isRunning
-        guard wasRunning else { return }
+        let shouldRestart = isRunning || transportState == .starting
+        guard shouldRestart else { return }
 
         let generation = nextRestartGeneration()
+        publish { self.transportState = .starting }
         controlQueue.async { [weak self] in
             guard let self, self.isRestartCurrent(generation) else { return }
-            self.stopSynchronously()
+            self.stopSynchronously(publishStopped: false)
             guard self.isRestartCurrent(generation) else { return }
             self.startEngine(resetInputRecovery: true)
         }
@@ -931,9 +1171,68 @@ final class AudioEngineController: ObservableObject, @unchecked Sendable {
         let generation = nextRestartGeneration()
         controlQueue.async { [weak self] in
             guard let self, self.isRestartCurrent(generation) else { return }
-            self.stopSynchronously()
+            self.stopSynchronously(publishStopped: false)
             guard self.isRestartCurrent(generation) else { return }
             self.startEngine(resetInputRecovery: false)
+        }
+    }
+
+    private func restartMonitorOutput(message: String? = nil) {
+        suppressInputWatchdog(for: 1.0)
+        warningMessage = message
+
+        let deviceID = selectedMonitorDeviceID
+        let sampleRate = activeSampleRate
+        let bufferFrames = activeBufferFrames
+        controlQueue.async { [weak self] in
+            guard let self else { return }
+            self.stopOutputUnit(&self.monitorOutputUnit)
+            self.monitorOutputContext = nil
+
+            guard deviceID != 0 else {
+                self.publish {
+                    self.monitorEnabled = false
+                    self.warningMessage = "Choose a monitor output device."
+                }
+                return
+            }
+
+            self.configureDeviceIO(deviceID: deviceID, sampleRate: sampleRate, frameSize: bufferFrames)
+            do {
+                try self.setupOutputUnit(deviceID: deviceID, sampleRate: sampleRate, kind: .monitor)
+                guard let monitorOutputUnit = self.monitorOutputUnit,
+                      AudioOutputUnitStart(monitorOutputUnit) == noErr else {
+                    throw AudioEngineError.halConfigurationFailed("Could not start monitor output.")
+                }
+                self.publish {
+                    if self.warningMessage == message {
+                        self.warningMessage = nil
+                    }
+                }
+            } catch {
+                self.stopOutputUnit(&self.monitorOutputUnit)
+                self.monitorOutputContext = nil
+                self.publish {
+                    self.monitorEnabled = false
+                    self.warningMessage = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    private func stopMonitorOutput(message: String?) {
+        warningMessage = message
+        controlQueue.async { [weak self] in
+            guard let self else { return }
+            self.stopOutputUnit(&self.monitorOutputUnit)
+            self.monitorOutputContext = nil
+            if let message {
+                self.publish {
+                    if self.warningMessage == message {
+                        self.warningMessage = nil
+                    }
+                }
+            }
         }
     }
 
@@ -1046,13 +1345,6 @@ final class AudioEngineController: ObservableObject, @unchecked Sendable {
         }
     }
 
-    private func controlQueueSync<T>(_ block: () -> T) -> T {
-        if DispatchQueue.getSpecific(key: controlQueueKey) != nil {
-            return block()
-        }
-        return controlQueue.sync(execute: block)
-    }
-
     private func syncOnMain<T>(_ block: @Sendable @escaping () -> T) -> T {
         if Thread.isMainThread {
             return block()
@@ -1067,6 +1359,55 @@ final class AudioEngineController: ObservableObject, @unchecked Sendable {
                 stage.assignedPlugin.id,
                 stage.processorPlugin.id
             ].joined(separator: "|")
+        }
+    }
+
+    private func combinedInsertSignature(
+        main: [InsertChainStage],
+        left: [InsertChainStage],
+        right: [InsertChainStage]
+    ) -> [String] {
+        insertSignature(for: main).map { "main|\($0)" }
+            + insertSignature(for: left).map { "left|\($0)" }
+            + insertSignature(for: right).map { "right|\($0)" }
+    }
+
+    private func pendingInsertChainSnapshot() -> (main: [InsertChainStage], left: [InsertChainStage], right: [InsertChainStage], signature: [String]) {
+        withInsertChainLock {
+            (
+                pendingMainInsertPlugins,
+                pendingLeftInsertPlugins,
+                pendingRightInsertPlugins,
+                pendingInsertSignature
+            )
+        }
+    }
+
+    private func currentActiveInsertSignature() -> [String] {
+        withInsertChainLock {
+            activeInsertSignature
+        }
+    }
+
+    private func publishLiveInsertWarningIfNeeded() {
+        var seenPluginIDs = Set<String>()
+        let pending = pendingInsertChainSnapshot()
+        let failureSummaries = (pending.main + pending.left + pending.right).compactMap { stage -> String? in
+            guard let failure = liveInsertLoadFailures[stage.processorPlugin.id],
+                  seenPluginIDs.insert(stage.processorPlugin.id).inserted else {
+                return nil
+            }
+            return "\(stage.assignedPlugin.name) (\(failure))"
+        }
+
+        publish {
+            if failureSummaries.isEmpty {
+                if self.warningMessage?.hasPrefix(Self.liveInsertWarningPrefix) == true {
+                    self.warningMessage = nil
+                }
+            } else {
+                self.warningMessage = Self.liveInsertWarningPrefix + failureSummaries.joined(separator: ", ")
+            }
         }
     }
 
@@ -1100,6 +1441,13 @@ final class AudioEngineController: ObservableObject, @unchecked Sendable {
     private func withRealtimeSnapshotLock<T>(_ block: () -> T) -> T {
         realtimeSnapshotLock.lock()
         defer { realtimeSnapshotLock.unlock() }
+        return block()
+    }
+
+    @discardableResult
+    private func withInsertChainLock<T>(_ block: () -> T) -> T {
+        insertChainLock.lock()
+        defer { insertChainLock.unlock() }
         return block()
     }
 }
@@ -1147,9 +1495,22 @@ private struct RealtimeMeterSnapshot {
 }
 
 private final class HostedAudioUnitInsertChain {
+    private static let audioUnitInstantiationTimeoutSeconds = 30.0
+
     private struct HostedStage {
         let stage: InsertChainStage
         let audioUnit: AVAudioUnit
+    }
+
+    private enum AudioUnitLoadError: LocalizedError {
+        case timedOut(String, TimeInterval)
+
+        var errorDescription: String? {
+            switch self {
+            case .timedOut(let pluginName, let timeoutSeconds):
+                return "Plug-in load timed out after \(Int(timeoutSeconds)) seconds: \(pluginName)"
+            }
+        }
     }
 
     private final class RenderSourceState {
@@ -1199,6 +1560,11 @@ private final class HostedAudioUnitInsertChain {
     private let maximumFrames: UInt32
     private let format: AVAudioFormat
     private let hostedStages: [HostedStage]
+    let failedPluginMessages: [String: String]
+
+    var isEmpty: Bool {
+        hostedStages.isEmpty
+    }
 
     init(stages: [InsertChainStage], sampleRate: Double, maximumFrames: UInt32) throws {
         guard !stages.isEmpty else {
@@ -1231,24 +1597,36 @@ private final class HostedAudioUnitInsertChain {
 
         var previousNode: AVAudioNode = sourceNode
         var builtStages: [HostedStage] = []
+        var failedPluginMessages: [String: String] = [:]
 
         for stage in stages {
             guard let componentDescription = stage.processorPlugin.audioUnitComponentDescription else {
-                throw AudioEngineError.halConfigurationFailed("Plug-in \(stage.assignedPlugin.name) is not an Audio Unit.")
+                failedPluginMessages[stage.processorPlugin.id] = "No loadable Audio Unit component was found."
+                continue
             }
 
-            let audioUnit = try Self.instantiateAudioUnit(componentDescription: componentDescription)
-            engine.attach(audioUnit)
-            engine.connect(previousNode, to: audioUnit, format: format)
-            previousNode = audioUnit
-            builtStages.append(HostedStage(stage: stage, audioUnit: audioUnit))
+            do {
+                let audioUnit = try Self.instantiateAudioUnit(
+                    componentDescription: componentDescription,
+                    pluginName: stage.assignedPlugin.name
+                )
+                engine.attach(audioUnit)
+                engine.connect(previousNode, to: audioUnit, format: format)
+                previousNode = audioUnit
+                builtStages.append(HostedStage(stage: stage, audioUnit: audioUnit))
+            } catch {
+                failedPluginMessages[stage.processorPlugin.id] = Self.failureDescription(for: error)
+            }
         }
 
-        engine.connect(previousNode, to: engine.mainMixerNode, format: format)
-        try engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: maximumFrames)
-        try engine.start()
+        if !builtStages.isEmpty {
+            engine.connect(previousNode, to: engine.mainMixerNode, format: format)
+            try engine.enableManualRenderingMode(.offline, format: format, maximumFrameCount: maximumFrames)
+            try engine.start()
+        }
 
         self.hostedStages = builtStages
+        self.failedPluginMessages = failedPluginMessages
         self.renderBuffer.frameLength = maximumFrames
     }
 
@@ -1299,7 +1677,11 @@ private final class HostedAudioUnitInsertChain {
         engine.disableManualRenderingMode()
     }
 
-    private static func instantiateAudioUnit(componentDescription: AudioComponentDescription) throws -> AVAudioUnit {
+    private static func instantiateAudioUnit(
+        componentDescription: AudioComponentDescription,
+        pluginName: String,
+        timeoutSeconds: TimeInterval = audioUnitInstantiationTimeoutSeconds
+    ) throws -> AVAudioUnit {
         final class Box: @unchecked Sendable {
             var audioUnit: AVAudioUnit?
             var error: Error?
@@ -1307,14 +1689,23 @@ private final class HostedAudioUnitInsertChain {
 
         let box = Box()
         let semaphore = DispatchSemaphore(value: 0)
-
-        AVAudioUnit.instantiate(with: componentDescription, options: []) { audioUnit, error in
-            box.audioUnit = audioUnit
-            box.error = error
-            semaphore.signal()
+        let instantiate: @Sendable () -> Void = {
+            AVAudioUnit.instantiate(with: componentDescription, options: []) { audioUnit, error in
+                box.audioUnit = audioUnit
+                box.error = error
+                semaphore.signal()
+            }
         }
 
-        semaphore.wait()
+        if Thread.isMainThread {
+            instantiate()
+        } else {
+            DispatchQueue.main.async(execute: instantiate)
+        }
+
+        guard semaphore.wait(timeout: .now() + timeoutSeconds) == .success else {
+            throw AudioUnitLoadError.timedOut(pluginName, timeoutSeconds)
+        }
 
         if let error = box.error {
             throw error
@@ -1323,6 +1714,16 @@ private final class HostedAudioUnitInsertChain {
             throw AudioEngineError.halConfigurationFailed("Could not instantiate the Audio Unit.")
         }
         return audioUnit
+    }
+
+    private static func failureDescription(for error: Error) -> String {
+        let nsError = error as NSError
+        let description = error.localizedDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !description.isEmpty,
+           description != "The operation couldn’t be completed. (\(nsError.domain) error \(nsError.code).)" {
+            return description
+        }
+        return "\(nsError.domain) \(nsError.code)"
     }
 }
 

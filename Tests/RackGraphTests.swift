@@ -127,4 +127,37 @@ final class RackGraphTests: XCTestCase {
 
         XCTAssertNil(viewModel.pluginEditorSession)
     }
+
+    func testDualMonoCopiesSingleRackIntoIndependentLanes() {
+        let viewModel = MainViewModel(scanPluginsOnInit: false)
+
+        viewModel.addRackBox()
+        viewModel.addRackBox()
+        let first = viewModel.rackBoxes[0].id
+        let second = viewModel.rackBoxes[1].id
+        viewModel.setRouteTarget(.box(second), for: first)
+
+        viewModel.setDualMonoEnabled(true)
+
+        XCTAssertEqual(viewModel.rackMode, .dualMono)
+        XCTAssertEqual(viewModel.leftRackBoxes.count, 2)
+        XCTAssertEqual(viewModel.rightRackBoxes.count, 2)
+        XCTAssertNotEqual(viewModel.leftRackBoxes[0].id, viewModel.rightRackBoxes[0].id)
+        XCTAssertEqual(viewModel.leftInputRouteTarget, .box(viewModel.leftRackBoxes[0].id))
+        XCTAssertEqual(viewModel.rightRackBoxes[0].routeTarget, .box(viewModel.rightRackBoxes[1].id))
+    }
+
+    func testCancellingDualMonoPluginChooserOnlyRemovesTargetLaneBox() {
+        let viewModel = MainViewModel(scanPluginsOnInit: false)
+
+        viewModel.setDualMonoEnabled(true)
+        viewModel.addRackBoxAndChoosePlugin(in: .right)
+        let target = try! XCTUnwrap(viewModel.pluginBrowserTarget)
+
+        viewModel.finishPluginBrowserSelection(for: target, committed: false)
+
+        XCTAssertTrue(viewModel.leftRackBoxes.isEmpty)
+        XCTAssertTrue(viewModel.rightRackBoxes.isEmpty)
+        XCTAssertNil(viewModel.pluginBrowserTarget)
+    }
 }
