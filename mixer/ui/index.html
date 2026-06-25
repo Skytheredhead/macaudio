@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MacAudio Mixer</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      margin: 24px;
+      background: #121212;
+      color: #f0f0f0;
+    }
+    .section {
+      margin-bottom: 24px;
+      padding: 16px;
+      background: #1e1e1e;
+      border-radius: 8px;
+    }
+    label {
+      display: block;
+      margin-bottom: 8px;
+    }
+    input[type="range"] {
+      width: 100%;
+    }
+    select {
+      width: 100%;
+      padding: 6px;
+      background: #2a2a2a;
+      color: #f0f0f0;
+      border: 1px solid #444;
+    }
+    .value {
+      float: right;
+    }
+  </style>
+</head>
+<body>
+  <h1>MacAudio Mixer</h1>
+
+  <div class="section">
+    <h2>Devices</h2>
+    <label>
+      Input Device
+      <select id="input-device"></select>
+    </label>
+    <label>
+      Output Device
+      <select id="output-device"></select>
+    </label>
+  </div>
+
+  <div class="section">
+    <h2>Gain</h2>
+    <label>
+      Gain (dB)
+      <span class="value" id="gain-value"></span>
+      <input type="range" id="gain" min="-24" max="24" step="0.1" />
+    </label>
+  </div>
+
+  <div class="section">
+    <h2>Compressor</h2>
+    <label>
+      Threshold (dB)
+      <span class="value" id="comp-threshold-value"></span>
+      <input type="range" id="comp-threshold" min="-60" max="0" step="0.5" />
+    </label>
+    <label>
+      Ratio
+      <span class="value" id="comp-ratio-value"></span>
+      <input type="range" id="comp-ratio" min="1" max="20" step="0.1" />
+    </label>
+    <label>
+      Attack (ms)
+      <span class="value" id="comp-attack-value"></span>
+      <input type="range" id="comp-attack" min="1" max="100" step="1" />
+    </label>
+    <label>
+      Release (ms)
+      <span class="value" id="comp-release-value"></span>
+      <input type="range" id="comp-release" min="10" max="500" step="1" />
+    </label>
+  </div>
+
+  <div class="section">
+    <h2>Parametric EQ</h2>
+    <label>
+      Frequency (Hz)
+      <span class="value" id="eq-frequency-value"></span>
+      <input type="range" id="eq-frequency" min="50" max="12000" step="10" />
+    </label>
+    <label>
+      Gain (dB)
+      <span class="value" id="eq-gain-value"></span>
+      <input type="range" id="eq-gain" min="-18" max="18" step="0.1" />
+    </label>
+    <label>
+      Q
+      <span class="value" id="eq-q-value"></span>
+      <input type="range" id="eq-q" min="0.1" max="10" step="0.1" />
+    </label>
+  </div>
+
+  <script>
+    const state = {
+      dirty: false,
+      params: {
+        gain_db: 0,
+        compressor: {
+          threshold_db: -18,
+          ratio: 2,
+          attack_ms: 10,
+          release_ms: 100,
+        },
+        eq: {
+          frequency: 1000,
+          gain_db: 0,
+          q: 1,
+        },
+      },
+    };
+
+    const setValue = (id, value) => {
+      document.getElementById(id).value = value;
+      const label = document.getElementById(`${id}-value`);
+      if (label) {
+        label.textContent = value;
+      }
+    };
+
+    const bindSlider = (id, path) => {
+      const slider = document.getElementById(id);
+      const [group, key] = path;
+      slider.addEventListener("input", () => {
+        state.params[group][key] = parseFloat(slider.value);
+        setValue(id, slider.value);
+        state.dirty = true;
+      });
+    };
+
+    const bindSingleSlider = (id, key) => {
+      const slider = document.getElementById(id);
+      slider.addEventListener("input", () => {
+        state.params[key] = parseFloat(slider.value);
+        setValue(id, slider.value);
+        state.dirty = true;
+      });
+    };
+
+    const populateDevices = async () => {
+      const response = await fetch("/devices");
+      const devices = await response.json();
+      const inputSelect = document.getElementById("input-device");
+      const outputSelect = document.getElementById("output-device");
+      inputSelect.innerHTML = "";
+      outputSelect.innerHTML = "";
+      const defaultInput = document.createElement("option");
+      defaultInput.value = "";
+      defaultInput.textContent = "Default Input";
+      inputSelect.appendChild(defaultInput);
+      const defaultOutput = document.createElement("option");
+      defaultOutput.value = "";
+      defaultOutput.textContent = "Default Output";
+      outputSelect.appendChild(defaultOutput);
+      devices.forEach((device) => {
+        if (device.max_input_channels > 0) {
+          const option = document.createElement("option");
+          option.value = device.id;
+          option.textContent = device.name;
+          inputSelect.appendChild(option);
+        }
+        if (device.max_output_channels > 0) {
+          const option = document.createElement("option");
+          option.value = device.id;
+          option.textContent = device.name;
+          outputSelect.appendChild(option);
+        }
+      });
+    };
+
+    const loadState = async () => {
+      const response = await fetch("/state");
+      const data = await response.json();
+      state.params = data.params;
+      setValue("gain", state.params.gain_db);
+      setValue("comp-threshold", state.params.compressor.threshold_db);
+      setValue("comp-ratio", state.params.compressor.ratio);
+      setValue("comp-attack", state.params.compressor.attack_ms);
+      setValue("comp-release", state.params.compressor.release_ms);
+      setValue("eq-frequency", state.params.eq.frequency);
+      setValue("eq-gain", state.params.eq.gain_db);
+      setValue("eq-q", state.params.eq.q);
+
+      if (data.devices.input_device !== null) {
+        document.getElementById("input-device").value = data.devices.input_device;
+      }
+      if (data.devices.output_device !== null) {
+        document.getElementById("output-device").value = data.devices.output_device;
+      }
+    };
+
+    const pushState = async () => {
+      if (!state.dirty) {
+        return;
+      }
+      state.dirty = false;
+      await fetch("/state", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(state.params),
+      });
+    };
+
+    const sendDeviceSelection = async () => {
+      const inputValue = document.getElementById("input-device").value;
+      const outputValue = document.getElementById("output-device").value;
+      await fetch("/devices/select", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          input_device: inputValue === "" ? null : parseInt(inputValue, 10),
+          output_device: outputValue === "" ? null : parseInt(outputValue, 10),
+        }),
+      });
+    };
+
+    document.getElementById("input-device").addEventListener("change", sendDeviceSelection);
+    document.getElementById("output-device").addEventListener("change", sendDeviceSelection);
+
+    bindSingleSlider("gain", "gain_db");
+    bindSlider("comp-threshold", ["compressor", "threshold_db"]);
+    bindSlider("comp-ratio", ["compressor", "ratio"]);
+    bindSlider("comp-attack", ["compressor", "attack_ms"]);
+    bindSlider("comp-release", ["compressor", "release_ms"]);
+    bindSlider("eq-frequency", ["eq", "frequency"]);
+    bindSlider("eq-gain", ["eq", "gain_db"]);
+    bindSlider("eq-q", ["eq", "q"]);
+
+    populateDevices().then(loadState);
+    setInterval(pushState, 50);
+  </script>
+</body>
+</html>
